@@ -2,7 +2,7 @@
 
 **Project:** AI-Enhanced Algorithmic Trading Bot for Deriv Synthetic Indices  
 **Status:** Blueprint phase — no coding yet  
-**Last updated:** 2026-05-14
+**Last updated:** 2026-05-14 (Checkpoint 1)
 
 ---
 
@@ -51,3 +51,12 @@ Our edge: **AI-driven regime detection + dynamic risk scaling** to exploit high-
 - Quantoxt does all coding — QAI = brainstorm/architect/reviewer
 - Demo account testing before any real money
 - Treat as research project first, profit engine second
+- **Everything runs local** — VPS only for live phase, Supabase via Docker locally
+- No hosting for external users — this is personal infrastructure
+
+## Existing Assets
+
+- **Telegram bot project** — already built, reusable for TG alerts
+- **Local Supabase** — Docker install ready
+- **Open Design (glm-5.1)** — for visual prototyping if needed
+- **AI model for codebase analysis** — for deep-diving pulled-down GitHub repos

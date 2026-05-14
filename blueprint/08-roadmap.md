@@ -14,9 +14,13 @@
 - [x] AI model planning (Watcher + Sentinel)
 - [x] Risk management framework
 - [x] Open-source resource audit
+- [x] Checkpoint 1 saved (2026-05-14)
 - [ ] Study Deriv indices properly (which ones, contract types, tick behavior)
 - [ ] Set up demo account on laptop
-- [ ] Finalize strategy parameters (timeframes, indicators, thresholds)
+- [ ] Pull down goldmine repos locally + inspect with AI model
+- [ ] Finalize strategy parameters (indicators, thresholds, timeframes) from proven configs
+- [ ] Contract type research (Rise/Fall vs Touch/No Touch vs Digit)
+- [ ] UI/Dashboard metrics design (after backend data structure locked)
 - [ ] Complete all open questions in docs
 
 ---

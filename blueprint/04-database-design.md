@@ -211,4 +211,5 @@ ticks table (raw)
 - Exact indices we're trading (determines tick volume)
 - How long to retain raw tick data
 - Whether to pre-compute candles in the DB or in Python
-- Supabase free tier limits — may need paid plan for heavy tick logging
+- **Supabase free tier limits** — using local Docker Supabase, no cloud limits
+- Dashboard metrics TBD — determined by final backend data structure

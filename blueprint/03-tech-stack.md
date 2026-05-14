@@ -8,11 +8,11 @@
 |-----------|-----------|---------|
 | **Execution** | Python + Deriv WebSocket API | Real-time tick streaming, trade execution |
 | **AI Processing** | FastAPI | Middle-man between AI logic and broker |
-| **Database** | Supabase (PostgreSQL) | Log every tick, bot decision, trade result |
+| **Database** | Supabase via Docker (local) | Log every tick, bot decision, trade result |
 | **ML Engine** | scikit-learn, XGBoost, hmmlearn | Regime detection, pattern recognition |
 | **Risk AI** | LLM API (GLM) | Confidence scoring, performance audit |
 | **Alerts** | Telegram Bot API | Real-time notifications to phone |
-| **Hosting** | Dedicated VPS | Near Deriv servers for low latency |
+| **Hosting** | Local machine (VPS only for live phase) | Local dev, VPS near Deriv for live only |
 
 ## Python Libraries
 
@@ -53,7 +53,11 @@
 ### Why VPS Near Deriv?
 Execution latency matters. Every millisecond between signal detection and order execution is slippage. A VPS in the same data center region as Deriv's matching engine minimizes this.
 
-## Development Workflow
+## Existing Assets
+
+- **Telegram bot project** — already built by Quantoxt, reuse for alert system
+- **Local Supabase** — Docker install already running
+- **AI codebase analysis model** — for deep-diving pulled-down GitHub repos
 
 1. **Local development** — build and test on laptop with demo account
 2. **Paper trading** — run on local or VPS with demo account, log everything

@@ -124,5 +124,12 @@ This system is an **Autonomous Hedge Fund**, not passive income.
 
 - Exact account size to start
 - Which indices (affects volatility and optimal stake sizing)
-- Contract types (affects risk profile — Rise/Fall vs Touch/No Touch have different risk profiles)
+- Contract types — need research, don't know much yet
 - Minimum number of demo trades before going live?
+- Dashboard metrics — determined by backend data structure
+
+## Existing Assets
+
+- **Telegram bot project** — Quantoxt already has one, reusable for alerts
+- **Local Supabase** — Docker, no cloud costs during dev
+- **Everything stays local** — no external hosting until live phase

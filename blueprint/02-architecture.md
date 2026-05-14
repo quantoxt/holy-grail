@@ -18,11 +18,13 @@ The "Sovereign-Subject" Model — splitting workload into specialized layers.
 - Execute entries/exits when trigger conditions met
 - Report every action to the Watcher
 
-### Trigger Types (Initial)
+### Trigger Types
+**Exact indicators TBD** after inspecting goldmine repos (see `07-open-source-resources.md`). Likely candidates:
 - EMA crossovers (fast/slow)
 - RSI overbought/oversold levels
 - Bollinger Band touches/piercings
 - Rejection candlestick patterns
+- Whatever proven configs we find in existing bots
 
 ### Weakness
 - **Blind to market context** — will trade in choppy conditions
@@ -135,3 +137,9 @@ Deriv API (WebSocket)
 Regime changes are **not frequent** — they shift over hours, not milliseconds. The Sentinel can run on a slower cadence (every few minutes or per-trade) without missing critical windows. This also means an LLM API call (which takes seconds, not milliseconds) is perfectly viable for the Sentinel role.
 
 **Conclusion:** Keep the LLM as-is for the Sentinel. Millisecond execution is only needed for the Soldier (Layer 1) — which is pure Python/WebSocket, no AI needed there.
+
+## Existing Code to Leverage
+
+- **Telegram bot** — Quantoxt already has a TG bot project, reusable for alerts
+- **Local Supabase** — Docker install ready, no cloud dependency
+- **Goldmine repos** — pull down locally, inspect with AI model, extract proven configs
