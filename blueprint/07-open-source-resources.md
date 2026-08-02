@@ -1,167 +1,117 @@
-# Open-Source Resources — GitHub Goldmines
-
-Proven code, libraries, and frameworks we can leverage instead of reinventing the wheel.
+# Open-Source Resources (Kronos-Era)
 
 ---
 
-## 🥇 Tier 1: Directly Usable — Deriv Synthetic Indices
+## 🥇 Tier 0: The Core — Kronos
+
+### quantoxt/Kronos (our fork)
+**URL:** https://github.com/quantoxt/Kronos  
+**Original:** https://github.com/shiyu-coder/Kronos  
+**License:** MIT  
+**Paper:** AAAI 2026 — [arXiv](https://arxiv.org/abs/2508.02739)
+
+**What it does:** Foundation model for financial candlesticks. Trained on 45+ exchanges. Predicts future OHLCV from historical K-line data.
+
+**What we use directly:**
+- ✅ `KronosPredictor` — prediction wrapper (load model, feed candles, get predictions)
+- ✅ `finetune_csv/` — complete fine-tuning pipeline for custom CSV data
+- ✅ `finetune_tokenizer.py` — adapt tokenizer to Deriv's price distributions
+- ✅ `finetune_base_model.py` — fine-tune predictor on Deriv data
+- ✅ `train_sequential.py` — one-command tokenizer + predictor training
+- ✅ HuggingFace pretrained models (`NeoQuasar/Kronos-small`, etc.)
+- ✅ Example backtester (`examples/run_backtest_kronos.py`)
+
+**This is the entire prediction + strategy engine.** Everything else is plumbing.
+
+---
+
+## 🥈 Tier 1: Deriv Infrastructure — What We Still Steal
 
 ### 1. leon-pixel/synthetic-indices-bot
 **URL:** https://github.com/leon-pixel/synthetic-indices-bot  
-**License:** MIT  
-**What it does:** Mean-reversion bot specifically built for Deriv synthetic indices
+**License:** MIT
 
-**Why it's gold:**
-- Shared tick → candle pipeline (we need this)
-- Backtesting + walk-forward validation built-in
-- Risk manager with session window, cooldown, daily loss, consecutive losses, **kill switch**
-- Paper streaming loop for demo testing
-- Research CLI with CSV or live Deriv tick fetching
-- M1 + M5 indicators (EMA, RSI, ATR regime detection)
-- Optional TradingView Pine Script integration
-- Full Python project structure to learn from
-
-**What we can steal:**
-- ✅ Tick → candle pipeline
-- ✅ Risk manager (session limits, cooldowns, kill switch)
-- ✅ Backtesting framework
-- ✅ Research CLI approach
+**What we still steal (strategy layer REMOVED, infrastructure only):**
+- ✅ Tick → candle pipeline (we need this for OHLCV generation)
+- ✅ Risk manager (session window, cooldown, daily loss, consecutive losses, kill switch)
+- ✅ Research CLI for fetching historical data from Deriv
+- ✅ Paper streaming loop for demo testing
 - ✅ Deriv API integration patterns
 
----
+**What we NO LONGER need from here:**
+- ❌ Strategy code (EMA, RSI, Bollinger Band signals) — Kronos handles this
+- ❌ Backtesting framework — use Kronos's own backtester
+- ❌ Walk-forward validation — use Kronos fine-tune pipeline's built-in validation
 
 ### 2. stephen-njiu/Trading-Pipeline
 **URL:** https://github.com/stephen-njiu/Trading-Pipeline  
-**License:** MIT  
-**What it does:** Algorithmic trading pipeline for Deriv — real-time streaming + Bollinger Bands + Rejection candle patterns
+**License:** MIT
 
-**Why it's gold:**
-- Clean Deriv WebSocket connection pattern
-- Tick → OHLC candle generation from live stream
-- Bollinger Bands + RSI strategy implementation
-- Signal → Trade execution flow
-- Simple, readable codebase — good reference for Deriv API usage
-
-**What we can steal:**
+**What we still steal:**
 - ✅ WebSocket connection boilerplate
-- ✅ Tick to OHLC conversion
-- ✅ Bollinger Band signal generation
+- ✅ Tick to OHLCV conversion (clean reference)
 - ✅ Trade execution via `api.proposal()` / `api.buy()`
 
----
+**What we NO LONGER need:**
+- ❌ Bollinger Band + RSI strategy — Kronos replaces
 
 ### 3. DavidKori/deriv-bots
 **URL:** https://github.com/DavidKori/deriv-bots  
-**License:** MIT  
-**What it does:** RSI-based bot for Deriv synthetic indices (V100, V75, V50)
+**License:** MIT
 
-**Why it's interesting:**
-- Claims **95%+ win rate** backtested on R_100 (487 trades)
-- Claims **100% win rate** on R_75 (14 trades) and 1HZ75V (32 trades)
-- Includes web dashboard for monitoring
-- Deploy script with start/stop/status/logs
-- Multiple symbol configurations
+**What we still steal:**
+- ✅ Dashboard implementation patterns (web UI reference)
+- ✅ Deploy script pattern (start/stop/status/logs)
+- ✅ Deriv API connection patterns
 
-**⚠️ Take with grain of salt:** 100% win rate claims are suspicious. Backtest ≠ live. But the strategy parameters and symbol-specific RSI configs are worth studying.
-
-**What we can study:**
-- ✅ RSI parameters per volatility index
-- ✅ Dashboard implementation
-- ✅ Deploy script pattern
-- ✅ Symbol-specific strategy tuning
-
----
+**What we NO LONGER need:**
+- ❌ RSI strategy parameters — Kronos replaces
+- ❌ Symbol-specific strategy tuning — Kronos handles this via fine-tuning
 
 ### 4. Deriv Official: python-deriv-api
 **URL:** https://github.com/deriv-com/python-deriv-api  
 **License:** Official  
-**PyPI:** `python-deriv-api`  
-**What it does:** Official Python WebSocket client for Deriv API
+**PyPI:** `python-deriv-api`
 
-**Essential — this is the SDK we build on top of.**
+**Essential — unchanged.** This is the SDK we build on top of.
 - WebSocket connection management
 - API call helpers (ping, proposal, buy, sell, subscription)
 - Async/await pattern
 - Reconnection handling
-- Examples included (`examples/simple_bot1.py`)
 
 ---
 
-## 🥈 Tier 2: Architecture & ML Inspiration
+## 🥉 Tier 2: Inspiration Only
 
 ### 5. freqtrade/freqtrade
 **URL:** https://github.com/freqtrade/freqtrade  
-**License:** GPL-3.0  
-**What it does:** Full-featured crypto trading bot (35K+ stars)
+**License:** GPL-3.0
 
-**Why it's relevant even though it's crypto:**
-- **FreqAI** — built-in adaptive ML that self-trains to market conditions (our Watcher concept)
-- Strategy optimization by machine learning
-- Backtesting framework with walk-forward
-- Telegram integration for management
-- WebUI for monitoring
-- SQLite persistence
-- Risk management system
+**Still relevant for patterns (concept only, no code copying):**
+- ✅ Risk management framework design (kill switches, drawdown circuit breakers)
+- ✅ Per-signal-type position sizing → adapt to per-confidence-level sizing
+- ✅ Telegram command handling (`/status`, `/profit`, `/stop`, `/start`)
+- ✅ Data hygiene (parameter hashing, trade logging with context)
 
-**What we can learn from (not copy — different license, different market):**
-- ✅ Architecture patterns for multi-component trading bot
-- ✅ FreqAI approach to adaptive ML in trading
-- ✅ Risk management framework design
-- ✅ Backtesting + walk-forward methodology
+**No longer relevant:**
+- ❌ FreqAI (adaptive ML) — Kronos replaces this entirely
+- ❌ Strategy abstraction — one model, no strategy classes
+- ❌ Hyperopt parameter optimization — fine-tuning replaces indicator optimization
 
----
+### 6. Deriv API Documentation
+**URL:** https://developers.deriv.com/docs/  
+**WebSocket Docs:** https://developers.deriv.com/docs/options/websocket/
 
-### 6. hmmlearn/hmmlearn
-**URL:** https://github.com/hmmlearn/hmmlearn  
-**License:** BSD-3-Clause  
-**What it does:** Hidden Markov Models in Python with scikit-learn API
-
-**Why we need it:** Core library for our Watcher's regime detection. HMM is the natural mathematical tool for detecting hidden states (regimes) in sequential data.
-
-- Gaussian HMM, GMM-HMM variants
-- scikit-learn compatible API
-- Well-documented
-- pip install hmmlearn
-
----
+- Official API docs — our bible during development
+- `ticks_history` call — essential for collecting training data
+- Contract types, parameters, responses
 
 ### 7. quantopian/pyfolio
 **URL:** https://github.com/quantopian/pyfolio  
-**License:** Apache-2.0  
-**What it does:** Portfolio and risk analytics in Python
+**License:** Apache-2.0
 
-**Useful for:**
-- Tear sheets — comprehensive performance visualization
-- Risk analysis (drawdown, Sharpe ratio, Sortino ratio)
-- Benchmarking strategy vs baseline
-- Works with backtest results
-
----
-
-## 🥉 Tier 3: Worth Exploring
-
-### 8. Deriv 4000+ Bot Collection
-**URL:** https://github.com/topics/deriv  
-**Note:** GitHub topics page lists repos including a collection claiming 4,000+ trading bots for Deriv
-
-- Could contain niche strategies worth studying
-- Need to browse and filter quality from noise
-
-### 9. elkd/deriv
-**URL:** https://github.com/elkd/deriv  
-**What it does:** Playwright-based automation for Deriv website (not API)
-
-- Less relevant (we use API, not browser automation)
-- But useful reference for Deriv's UI flow if we ever need it
-
-### 10. Deriv API Documentation
-**URL:** https://developers.deriv.be/docs/  
-**WebSocket Docs:** https://developers.deriv.com/docs/options/websocket/  
-**Deep Reference:** https://deepwiki.com/deriv-com/python-deriv-api
-
-- Official API docs — our bible during development
-- WebSocket protocol reference
-- Contract types, parameters, responses
+- Portfolio analytics, tear sheets, drawdown/Sharpe/Sortino
+- Useful for evaluating Kronos backtest results
 
 ---
 
@@ -169,32 +119,40 @@ Proven code, libraries, and frameworks we can leverage instead of reinventing th
 
 | Component | Source | Effort Saved |
 |-----------|--------|-------------|
-| WebSocket connection | python-deriv-api + Trading-Pipeline | Days |
-| Tick → OHLC pipeline | synthetic-indices-bot | Days |
-| Risk manager (kill switches) | synthetic-indices-bot | Week+ |
-| Backtesting framework | synthetic-indices-bot + freqtrade patterns | Weeks |
-| HMM regime detection | hmmlearn library | Week |
-| Dashboard UI | deriv-bots dashboard + freqtrade WebUI patterns | Week |
-| Telegram alerts | synthetic-indices-bot implementation | Day |
+| **OHLCV prediction** | Kronos (core value) | Months |
+| **Fine-tuning pipeline** | Kronos finetune_csv | Weeks |
+| **WebSocket connection** | python-deriv-api + Trading-Pipeline | Days |
+| **Tick → OHLCV pipeline** | synthetic-indices-bot | Days |
+| **Risk manager (kill switches)** | synthetic-indices-bot | Week+ |
+| **Backtesting framework** | Kronos examples + pyfolio | Weeks |
+| **Dashboard UI patterns** | deriv-bots + freqtrade WebUI | Week |
+| **Telegram alerts** | synthetic-indices-bot | Day |
 
-## What We STILL Need to Build (No Good Existing Solutions)
+## What We STILL Need to Build
 
 | Component | Why |
 |-----------|-----|
-| **Sentinel (LLM risk manager)** | Nobody's doing this — unique to our architecture |
-| **Confidence scoring system** | Custom weighted composite |
-| **Supabase logging layer** | Project-specific schema |
-| **Strategy parameter optimization** | Needs to be tailored to our specific indices/contract types |
-| **Model retraining pipeline** | Automated HMM/XGBoost retraining on recent data |
-| **Multi-layer orchestration** | Wiring Soldier ↔ Watcher ↔ Sentinel together |
+| **Deriv historical data collector** | Pull months of ticks for Kronos fine-tuning |
+| **Kronos inference wrapper** | Integrate model into live bot pipeline |
+| **Prediction → signal logic** | Threshold-based BUY/SELL from predicted OHLCV |
+| **Regime from predictions** | Variance + error tracking → regime classification |
+| **Supabase logging layer** | Project-specific schema (predictions, trades, ticks) |
+| **Sentinel confidence scoring** | Custom weighted composite from Kronos outputs |
+| **Multi-layer orchestration** | Wiring Soldier ↔ Watcher ↔ Sentinel |
+| **Vue dashboard** | Web monitoring UI (6 views) |
+| **FastAPI backend** | REST + WebSocket for dashboard |
+| **Model retraining pipeline** | Automated monthly Kronos retrain |
+| **Docker deployment** | Single-container (Vue + Python + Kronos) |
 
 ---
 
 ## Research To-Do
 
-- [ ] Browse the 4000+ bot collection on GitHub topics/deriv
-- [ ] Deep-dive synthetic-indices-bot codebase — understand every module
-- [ ] Study DavidKori's RSI params per volatility level
-- [ ] Read freqtrade's FreqAI documentation for ML approach inspiration
-- [ ] Check Deriv API docs for contract types we haven't considered
-- [ ] Look for existing HMM regime detection examples in trading context
+- [x] Fork Kronos repo — done
+- [x] Understand finetune_csv pipeline — done
+- [ ] Set up Deriv demo account + API token
+- [ ] Pull historical tick data via `ticks_history` API
+- [ ] Test Kronos vanilla prediction on Deriv data (before fine-tuning, as baseline)
+- [ ] Fine-tune and compare
+- [ ] Browse Deriv docs for `ticks_history` rate limits and data availability
+- [ ] Check if Deriv provides historical OHLCV directly (skip tick aggregation if so)

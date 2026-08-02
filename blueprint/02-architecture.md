@@ -1,91 +1,180 @@
-# Three-Layer Hybrid Intelligence Architecture
+# Three-Layer Hybrid Intelligence Architecture (Kronos-Era)
 
-The "Sovereign-Subject" Model — splitting workload into specialized layers.
+The "Sovereign-Subject" Model — Kronos foundation model as the core intelligence, with execution and risk management layered on top.
 
 ---
 
-## Layer 1: The Soldier (Execution Bot)
+## Layer 1: The Soldier (Execution + Prediction Engine)
 
-**Technology:** Deriv WebSocket API (Python)  
-**Speed:** Millisecond execution  
-**Role:** High-speed, emotionless entry/exit based on fixed mathematical triggers
+**Technology:** Deriv WebSocket API (Python) + Kronos (PyTorch)  
+**Speed:** Seconds (per candle close — not per tick)  
+**Role:** Predict future candles via Kronos, extract trade signals, execute emotionlessly
+
+### How It Works Now
+
+Every candle close (e.g., M1):
+1. Feed last 512 candles of OHLCV data to Kronos
+2. Kronos predicts next N candles (OHLCV)
+3. Signal extraction logic compares predicted close vs current price
+4. If predicted move exceeds threshold → generate BUY or SELL signal
+5. Execute trade via Deriv WebSocket API
+6. Log everything
 
 ### Responsibilities
 - Maintain WebSocket connection to Deriv
 - Stream tick data in real-time
-- Build OHLC candles from tick stream
-- Calculate technical indicators (EMA, RSI, Bollinger Bands, ATR)
-- Execute entries/exits when trigger conditions met
-- Report every action to the Watcher
+- Build OHLCV candles from tick stream
+- **Run Kronos inference on each candle close**
+- Extract trade signals from Kronos predictions
+- Execute entries/exits when signal conditions met
+- Report every action to Watcher + Sentinel
 
-### Trigger Types
-**Exact indicators TBD** after inspecting goldmine repos (see `07-open-source-resources.md`). Likely candidates:
-- EMA crossovers (fast/slow)
-- RSI overbought/oversold levels
-- Bollinger Band touches/piercings
-- Rejection candlestick patterns
-- Whatever proven configs we find in existing bots
+### Signal Extraction (Thin Logic Layer)
+
+Replace complex indicator calculations with simple prediction comparison:
+
+```
+For each Kronos prediction (next N candles):
+  predicted_close = mean of predicted closes
+  current_close = last actual close
+  predicted_move = (predicted_close - current_close) / current_close
+
+  if predicted_move > LONG_THRESHOLD:
+      signal = BUY, strength = predicted_move
+  elif predicted_move < SHORT_THRESHOLD:
+      signal = SELL, strength = abs(predicted_move)
+  else:
+      signal = HOLD
+```
+
+Threshold values determined during fine-tuning validation — calibrated to produce acceptable win rate without over-trading.
+
+### Why This Replaces Indicators
+
+- **No EMA periods to tune** — Kronos learned candle patterns from 45+ exchanges
+- **No RSI levels to agonize over** — the model captures momentum internally
+- **No Bollinger Band parameters** — Kronos understands volatility natively
+- **No strategy abstraction class hierarchy** — one model, one prediction, one signal path
+
+### What We Still Need
+- Tick → OHLCV candle aggregation (steal from goldmine repos)
+- Deriv WebSocket connection + reconnection (python-deriv-api)
+- Trade execution via Deriv API (proposal → buy)
+- Kronos inference wrapper (load model, feed candles, get predictions)
 
 ### Weakness
-- **Blind to market context** — will trade in choppy conditions
-- **No memory** — doesn't know if last 5 trades were losses
-- **No self-preservation** — will keep trading until account is empty
-
-This is why Layers 2 and 3 exist.
+- **Predictions are seconds behind** — inference time means we trade on candle close, not real-time ticks
+- **No tick-level precision** — fine for Deriv synthetic indices which are less time-sensitive than real markets
+- **Model can be wrong** — confidence scoring + Sentinel kill switches handle this
 
 ---
 
-## Layer 2: The Watcher (AI Regime Detection)
+## Layer 2: The Watcher (Kronos Confidence Layer)
 
-**Technology:** Python — Scikit-Learn, XGBoost, or Hidden Markov Models  
-**Speed:** Seconds (runs on each new candle close)  
-**Role:** Classify current market regime → Kill switch for bad conditions
+**Technology:** Derived from Kronos prediction outputs (pure Python)  
+**Speed:** Seconds (runs alongside each Kronos inference)  
+**Role:** Extract market regime from Kronos's own predictions → Kill switch
 
-### Regime Types
-| Regime | Bot Action | Description |
-|--------|-----------|-------------|
-| **Trending** | ✅ Trade | Clear directional movement, strategy works |
-| **Choppy** | 🛑 Stop | Sideways noise, false signals everywhere |
-| **High Volatility** | ⚠️ Caution | Big moves but erratic — reduce position size |
+### The Insight
+
+In the original architecture, the Watcher used HMM/XGBoost to classify regime (trending/choppy/high-vol). **This is replaced.** Kronos implicitly reveals regime through its prediction characteristics:
+
+| Kronos Output Signal | Regime Meaning | Bot Action |
+|----------------------|----------------|------------|
+| **Low prediction variance** (tight H-L spread) | Predictable, likely trending | ✅ Full trade |
+| **High prediction variance** (wide H-L spread) | Noisy, uncertain | 🛑 Stop trading |
+| **Prediction error rising** (pred vs actual diverging) | Model losing grip | ⚠️ Reduce position |
+| **Low prediction variance + strong directional bias** | Strong trend, high confidence | 🔥 Scale up (Sentinel territory) |
 
 ### How It Works
-1. Ingests recent tick/candle data (rolling window)
-2. Extracts features: volatility (ATR), trend strength (ADX), momentum (RSI), entropy
-3. Classifies current regime using trained model
-4. Sends regime signal to Soldier → Soldier pauses if regime = Choppy
-5. Sends regime signal to Sentinel → Sentinel adjusts risk parameters
 
-### Model Options
-- **Hidden Markov Model (HMM)** — `hmmlearn` library, unsupervised, detects hidden states in price data
-- **XGBoost Classifier** — supervised, train on labeled regime data
-- **K-Means Clustering** — unsupervised regime grouping
+1. Kronos generates prediction for next N candles
+2. **Calculate prediction variance** — standard deviation of predicted close values across the N candles
+3. **Track rolling prediction error** — compare Kronos's past predictions vs actual outcomes
+4. Classify regime from these two metrics (simple thresholds, no ML needed)
+5. Pass regime + confidence to Soldier → Soldier filters or executes signals
+6. Pass regime + confidence to Sentinel → Sentinel adjusts risk parameters
 
-### Key Insight
-Regime changes are **not frequent** — they happen on the scale of hours, not milliseconds. The Watcher doesn't need sub-second speed. Running on candle close (every 1-5 minutes) is sufficient.
+### Regime Classification (Threshold-Based, No ML)
+
+```python
+def classify_regime(prediction_variance, rolling_error):
+    if prediction_variance < LOW_VOL_THRESHOLD and rolling_error < ERROR_THRESHOLD:
+        return "trending", high_confidence
+    elif prediction_variance > HIGH_VOL_THRESHOLD or rolling_error > HIGH_ERROR_THRESHOLD:
+        return "choppy", low_confidence
+    else:
+        return "normal", medium_confidence
+```
+
+Thresholds calibrated during fine-tuning backtesting. Simple, fast, no model to train or retrain.
+
+### Why This Is Better Than HMM/XGBoost
+
+- **No hidden state assumption** — HMM assumed hidden states exist in CSRNG data, which is questionable
+- **No labeled training data needed** — XGBoost required manually labeled regimes, we didn't have any
+- **No retraining pipeline** — no weekly/monthly model refresh, thresholds are stable
+- **Directly coupled to prediction quality** — regime reflects whether Kronos is actually useful right now
+- **Faster** — simple math, no ML inference on top of ML inference
+
+### Rolling Prediction Error Tracking
+
+Maintain a sliding window of Kronos predictions vs actual outcomes:
+
+```
+last 50 predictions:
+  predicted_close_1 vs actual_close_1 → error_1
+  predicted_close_2 vs actual_close_2 → error_2
+  ...
+  rolling_mae = mean(|error_i|) for i in last 50
+  rolling_directional_accuracy = % of predictions where direction was correct
+```
+
+When rolling error spikes → model is confused → reduce confidence → smaller lots or pause.
 
 ---
 
 ## Layer 3: The Sentinel (Risk & Confidence Manager)
 
-**Technology:** LLM API (GLM/GPT) or dedicated Neural Network  
+**Technology:** Rule-based Python (same as original)  
 **Speed:** Minutes (runs periodically, not per-tick)  
 **Role:** Monitor bot performance → Decide Rules of Engagement
 
-### Responsibilities
+**Unchanged from original design** — but receives better inputs.
+
+### What Changed for Sentinel
+
+**Old confidence inputs (5 abstract weighted factors):**
+- Regime alignment (30%) — from HMM
+- Indicator confluence (25%) — from EMA/RSI/BB agreement
+- Recent performance (20%) — rolling win rate
+- Volatility favorability (15%) — ATR range
+- Entropy level (10%) — Shannon entropy
+
+**New confidence inputs (Kronos-derived):**
+| Input | Weight | Source |
+|-------|--------|--------|
+| Kronos prediction confidence | 35% | Prediction variance + directional bias strength |
+| Rolling prediction accuracy | 25% | Last N predictions vs actuals |
+| Recent trade performance | 20% | Rolling win rate (unchanged) |
+| Regime state | 15% | Watcher classification (trending/choppy/normal) |
+| Prediction magnitude | 5% | Size of expected move (avoid tiny moves) |
+
+### Responsibilities (Unchanged)
 
 #### Performance Monitoring
 - Track win rate, loss streaks, drawdown over rolling windows
 - Compare live performance vs backtest expectations
 - Detect performance degradation early
 
-#### Kill Switch Authority
+#### Kill Switch Authority (Rule-Based)
 - **Daily loss limit** hit → stop trading for the day
 - **Consecutive loss streak** hit → cooldown period
 - **Drawdown threshold** breached → pause + alert
-- **Regime shift** detected by Watcher → confirm or override
+- **Prediction accuracy dropping** → auto-pause + alert (NEW — Kronos-specific)
+- **Regime = choppy** detected → confirm or override
 
 #### Confidence Scaling ("The Sure Situation")
-When AI detects **90%+ confidence** — alignment of indicators AND low entropy AND favorable regime:
 
 | Confidence | Lot Size | Notes |
 |-----------|---------|-------|
@@ -96,50 +185,59 @@ When AI detects **90%+ confidence** — alignment of indicators AND low entropy 
 | 90%+ | 5x | **Sure situation** — max scale |
 
 ### Sentinel Frequency
-Since regime changes are infrequent, the Sentinel doesn't need millisecond execution either. A periodic check (every few minutes or on each trade completion) is adequate for:
-- Updating confidence scores
-- Adjusting lot sizes
-- Monitoring drawdown limits
-- Sending alerts via Telegram
+
+Runs every few minutes or on each trade completion. Not per-tick, not per-candle.
+
+### Sentinel as Advisor, Not Autocrat
+
+Same rule as before:
+- ✅ Kill the bot (hard limit breached)
+- ✅ Scale lot size (confidence scoring)
+- ✅ Alert you (anomaly detected)
+- ❌ Override the Soldier's signal
+- ❌ Change Kronos parameters on its own
 
 ---
 
-## Layer Communication Flow
+## Layer Communication Flow (Kronos-Era)
 
 ```
 Deriv API (WebSocket)
     │
     ▼
-┌─────────────────────────┐
-│  Layer 1: Soldier       │  ← Tick stream, indicators, execution
-│  (Python, real-time)    │
-└─────────┬───────────────┘
-          │ tick data + indicators
+┌─────────────────────────────────────┐
+│  Layer 1: Soldier                   │  ← Tick stream → OHLCV candles
+│  (Python + Kronos inference)        │  ← Kronos predicts future candles
+│                                     │  ← Thin signal logic → BUY/SELL/HOLD
+│                                     │  → Trade execution via Deriv API
+└─────────┬───────────────────────────┘
+          │ predictions + variance + error tracking
           ▼
-┌─────────────────────────┐
-│  Layer 2: Watcher       │  ← Regime classification
-│  (ML model, per-candle) │  → Kill switch signal
-└─────────┬───────────────┘
-          │ regime + confidence
+┌─────────────────────────────────────┐
+│  Layer 2: Watcher                   │  ← Extract regime from Kronos outputs
+│  (Pure Python, threshold-based)     │  → Trending/choppy/normal classification
+│  (NO ML model needed)               │  → Kill switch signal
+└─────────┬───────────────────────────┘
+          │ regime + kronos_confidence
           ▼
-┌─────────────────────────┐
-│  Layer 3: Sentinel      │  ← Performance audit, risk scaling
-│  (LLM/NN, periodic)    │  → Lot size adjustment, kill confirm
-└─────────┬───────────────┘
+┌─────────────────────────────────────┐
+│  Layer 3: Sentinel                  │  ← Performance audit, risk scaling
+│  (Rule-based Python)               │  → Lot size adjustment, kill confirm
+│                                     │  → Telegram alerts
+└─────────┬───────────────────────────┘
           │
           ▼
     Telegram Alerts (to you)
     Supabase Logs (every decision)
 ```
 
-## Design Decision: Sentinel Speed
+## Design Decision: No LLM in Sentinel
 
-Regime changes are **not frequent** — they shift over hours, not milliseconds. The Sentinel can run on a slower cadence (every few minutes or per-trade) without missing critical windows. This also means an LLM API call (which takes seconds, not milliseconds) is perfectly viable for the Sentinel role.
-
-**Conclusion:** Keep the LLM as-is for the Sentinel. Millisecond execution is only needed for the Soldier (Layer 1) — which is pure Python/WebSocket, no AI needed there.
+The original design planned GLM API for Sentinel anomaly detection. **Shelved to Phase 4+.** The confidence scoring is a weighted formula — pure Python does that faster and more reliably. No LLM needed until the system is proven on demo.
 
 ## Existing Code to Leverage
 
+- **Kronos (quantoxt/Kronos)** — foundation model, finetune_csv pipeline, backtest framework
 - **Telegram bot** — Quantoxt already has a TG bot project, reusable for alerts
 - **Local Supabase** — Docker install ready, no cloud dependency
-- **Goldmine repos** — pull down locally, inspect with AI model, extract proven configs
+- **Goldmine repos** — Deriv WebSocket patterns, tick→candle pipeline (for Soldier only, not strategy)

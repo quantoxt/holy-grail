@@ -1,166 +1,246 @@
-# AI Models — Watcher & Sentinel
+# AI Models — Kronos Fine-Tuning & Inference
+
+**Status:** Kronos replaces both the Watcher (HMM/XGBoost) and the Soldier's indicator engine.
 
 ---
 
-## Layer 2: Watcher — Regime Detection
+## The Core Model: Kronos
 
-### The Problem
-The Soldier's strategy only works in certain market conditions. In choppy markets, it generates false signals and bleeds money. The Watcher's job is to classify the current market "regime" and tell the Soldier when to trade and when to sit out.
+**What:** Decoder-only foundation model pre-trained on K-line (OHLCV candle) data from 45+ global exchanges. Treats financial candles as a "language" — a specialized tokenizer quantizes continuous OHLCV into hierarchical discrete tokens, then a Transformer autoregressively generates future candles.
 
-### Regime Types
+**Paper:** Accepted at AAAI 2026 — [arXiv](https://arxiv.org/abs/2508.02739)  
+**License:** MIT  
+**HuggingFace:** `NeoQuasar/Kronos-*` models  
+**Repo:** `quantoxt/Kronos` (our fork, includes finetune_csv pipeline)
 
-| Regime | Characteristics | Soldier Action |
-|--------|----------------|---------------|
-| **Trending** | Clear direction, low noise | ✅ Full trade |
-| **Choppy** | Sideways, high noise | 🛑 Stop trading |
-| **High Volatility** | Large moves, erratic | ⚠️ Reduced position |
+### Model Selection
 
-### Feature Engineering
+| Model | Params | Context | Speed | Accuracy | When to Use |
+|-------|--------|---------|-------|----------|-------------|
+| Kronos-mini | 4.1M | 2048 | Fast (CPU OK) | Lower | Development, prototyping, testing |
+| Kronos-small | 24.7M | 512 | Medium (GPU preferred) | Good | **Recommended starting point** |
+| Kronos-base | 102.3M | 512 | Slow (GPU required) | Best | Production live trading |
+| Kronos-large | 499.2M | 512 | Very slow | Best | Not open-source, unavailable |
 
-Input features extracted from rolling window of candle data:
+**Start with Kronos-small for everything.** Upgrade to Kronos-base for live only if GPU is available and inference benchmarks are acceptable.
 
-| Feature | Description | Why It Matters |
-|---------|-------------|----------------|
-| **ATR** (Average True Range) | Volatility measure | High ATR = volatile regime |
-| **ADX** (Average Directional Index) | Trend strength | Low ADX = choppy |
-| **RSI variance** | Oscillation of RSI over window | High variance = erratic |
-| **Price entropy** | Shannon entropy of price changes | High entropy = noisy |
-| **Volatility ratio** | Short ATR / Long ATR | Spike = regime shift |
-| **BB width** | Bollinger Band squeeze/expand | Squeeze = low vol, expand = high vol |
-| **Return autocorrelation** | Serial correlation of returns | Significant = trending |
+### Why 512 Context is Fine for Deriv
 
-### Model Options
+512 candles at:
+- M1 → 8.5 hours of history
+- M5 → 42 hours of history
+- M15 → 5.2 days of history
 
-#### Option A: Hidden Markov Model (HMM)
-- **Library:** `hmmlearn`
-- **Approach:** Unsupervised — model discovers hidden states automatically
-- **Pros:** No labeling needed, naturally models regime transitions, theoretically sound
-- **Cons:** Needs hyperparameter tuning (number of states), can be unstable
-- **Best for:** When we don't have labeled regime data (which we don't, initially)
-
-#### Option B: XGBoost Classifier
-- **Library:** `xgboost`
-- **Approach:** Supervised — train on labeled data
-- **Pros:** Fast, accurate, handles non-linear relationships well
-- **Cons:** Needs labeled training data (we'd need to manually classify historical regimes)
-- **Best for:** After we have enough labeled data from manual review
-
-#### Option C: K-Means Clustering
-- **Library:** `scikit-learn`
-- **Approach:** Unsupervised — group similar feature vectors
-- **Pros:** Simple, fast, easy to interpret
-- **Cons:** Assumes spherical clusters, less nuanced
-- **Best for:** Quick baseline / prototyping
-
-### Recommended Approach
-
-1. **Start with HMM** — unsupervised, no labeling needed, good fit for regime detection
-2. **Collect labeled data** during paper trading — log HMM outputs + manual regime labels
-3. **Train XGBoost** once we have enough labeled data — likely more accurate
-4. **Ensemble** — combine HMM + XGBoost for robustness
-
-### Training Pipeline
-
-```
-Historical tick data (from Deriv ticks_history)
-    │
-    ▼
-Build OHLC candles (M1, M5)
-    │
-    ▼
-Calculate feature set (rolling window)
-    │
-    ▼
-Train HMM (3 hidden states → trending/choppy/high-vol)
-    │
-    ▼
-Validate against walk-forward backtest
-    │
-    ▼
-Deploy model → classify each new candle in real-time
-```
-
-### Retraining Cadence
-- Regime patterns may drift over time (CSRNG algorithm updates)
-- Retrain weekly or monthly using recent data
-- Always validate new model against recent performance before deploying
+Synthetic indices don't have macroeconomic regime shifts (no news, no geopolitical events). Patterns cycle on shorter timescales. 512 candles is more than enough to capture the local structure.
 
 ---
 
-## Layer 3: Sentinel — Risk & Confidence Manager
+## Phase 0: Fine-Tuning on Deriv Data (MANDATORY)
 
-### The Problem
-Even with regime detection, the bot needs dynamic risk management. The Sentinel monitors overall performance, enforces hard limits, and scales lot sizes based on confidence.
+**This is the critical prerequisite.** Kronos was trained on real exchange data. Synthetic indices have different microstructure — CSRNG-generated patterns don't behave exactly like real markets. The model MUST be fine-tuned on Deriv-specific data before any trading.
 
-### Responsibilities
+### Step 1: Collect Historical Data
 
-#### 1. Kill Switch Enforcement (Rule-Based)
-These are hard rules, no AI needed:
+Use Deriv API to pull tick history for target indices:
+- `ticks_history` API call → raw tick data
+- Aggregate ticks into OHLCV candles (M1 or M5)
+- Target: **minimum 3-6 months of continuous data per index**
+- Store as CSV: `timestamps, open, high, low, close, volume, amount`
+- Volume/amount can be 0 for synthetic indices (not meaningful)
 
-| Trigger | Action |
-|---------|--------|
-| Daily loss > X% | Stop trading for the day |
-| Consecutive losses > N | Cooldown period (minutes) |
-| Drawdown > X% from session high | Pause + alert |
-| Win rate < Y% over last N trades | Reduce lot size |
-| No signal for Z minutes | Health check |
+### Step 2: Prepare Fine-Tuning Data
 
-#### 2. Confidence Scoring (AI-Assisted)
-Composite score from multiple inputs:
+Format required by finetune_csv pipeline:
 
-| Input | Weight | Source |
-|-------|--------|--------|
-| Regime alignment | 30% | Watcher output |
-| Indicator confluence | 25% | Multiple indicators agree |
-| Recent performance | 20% | Rolling win rate |
-| Volatility favorability | 15% | ATR within optimal range |
-| Entropy level | 10% | Low entropy = more predictable |
+```csv
+timestamps,open,close,high,low,volume,amount
+2026-01-15 00:00,1024.35,1025.12,1025.80,1023.90,0,0
+2026-01-15 00:01,1025.12,1024.87,1025.50,1024.20,0,0
+...
+```
 
-**Confidence Score** = weighted average → maps to lot multiplier (see architecture doc)
+Split: 90% train / 10% validation (configurable)
 
-#### 3. Performance Monitoring
-- Rolling P&L chart
-- Win rate by regime type
-- Win rate by signal type
-- Drawdown tracking
-- Comparison to backtest baseline
+### Step 3: Fine-Tune Tokenizer
 
-### LLM Usage (GLM API)
+```bash
+python finetune_csv/finetune_tokenizer.py \
+  --config research/experiments/deriv_v75_m5.yaml
+```
 
-The Sentinel uses the LLM for higher-level reasoning:
-- **Anomaly detection:** "The last 20 trades deviate significantly from backtest expectations — investigate why"
-- **Strategy adjustment suggestions:** "Choppy regime persists longer than expected — consider tightening RSI thresholds"
-- **Daily summaries:** Generate human-readable performance reports
-- **Alert context:** "Kill switch triggered — 5 consecutive losses in trending regime, which is unusual"
+The tokenizer learns to quantize Deriv's specific price distributions into discrete tokens. This adapts the "vocabulary" to synthetic index volatility profiles.
 
-**Why LLM is fine here:**
-- Runs every few minutes, not per-tick
-- Latency of seconds is acceptable
-- Complex reasoning that pure code handles poorly
-- GLM-5 / GLM-5-turbo are strong at this kind of analytical reasoning
+**Hyperparameters to tune:**
+- `tokenizer_epochs`: 20-50 (start with 30)
+- `tokenizer_learning_rate`: 0.0001-0.0003 (start with 0.0002)
+- `batch_size`: 32
 
-### Sentinel as Advisor, Not Autocrat
+### Step 4: Fine-Tune Predictor
 
-Critical design decision: The Sentinel **advises and enforces hard limits** but doesn't make discretionary trades. It can:
-- ✅ Kill the bot (hard limit breached)
-- ✅ Scale lot size (confidence scoring)
-- ✅ Alert you (anomaly detected)
-- ❌ Override the Soldier's signal (no "I think this trade is better")
-- ❌ Change strategy parameters on its own
+```bash
+python finetune_csv/finetune_base_model.py \
+  --config research/experiments/deriv_v75_m5.yaml
+```
 
-Strategy parameter changes require human review + approval.
+The predictor learns to generate accurate future candles for Deriv data specifically.
+
+**Hyperparameters to tune:**
+- `basemodel_epochs`: 10-30 (start with 20)
+- `predictor_learning_rate`: 0.0000005-0.000002 (start with 0.000001)
+- `predict_window`: 24-96 (how many future candles to predict)
+- `lookback_window`: 256-512 (input context length)
+
+### Step 5: Validate — Walk-Forward Backtest
+
+**This is the most important step.** Before any live trading:
+
+1. Split historical data into rolling windows (e.g., 2 months train, 1 month test)
+2. Fine-tune on window A, predict on window B
+3. Slide forward: fine-tune on A+B, predict on C
+4. Walk forward across entire dataset
+5. Measure: directional accuracy, MAE, prediction variance patterns
+6. **Compare: model fine-tuned on Deriv vs vanilla Kronos (no fine-tuning)**
+7. If fine-tuned model doesn't significantly outperform vanilla → investigate
+
+### Step 6: Calibrate Signal Thresholds
+
+From backtest results:
+- Find `LONG_THRESHOLD` and `SHORT_THRESHOLD` that produce:
+  - Win rate > 55%
+  - Reasonable trade frequency (not too sparse, not over-trading)
+  - Acceptable drawdown
+- These thresholds are specific to each index + timeframe
+
+### Step 7: Benchmark Inference Latency
+
+Measure actual prediction time on target hardware:
+- Kronos-small on CPU: expect ~100-500ms per prediction
+- Kronos-small on GPU: expect ~50-100ms per prediction
+- Must complete within candle interval (M1 = 60s margin, very comfortable)
 
 ---
 
-## Model Performance Tracking
+## Live Inference Pipeline
 
-Every model decision gets logged:
+### Per Candle Close (M1 or M5)
 
+```python
+# Pseudocode
+ticker.subscribe(symbol)  # Stream ticks
+on_candle_close():
+    candles = get_last_512_candles(symbol, timeframe)
+    predictions = kronos.predict(
+        df=candles[['open','high','low','close']],
+        x_timestamp=candles['timestamps'],
+        y_timestamp=future_timestamps(pred_len=48),
+        pred_len=48,
+        T=1.0,
+        top_p=0.9,
+        sample_count=3  # Multiple paths, average for stability
+    )
+    signal = extract_signal(predictions, current_close)
+    regime = classify_regime(predictions)
+    log_to_supabase(candles, predictions, signal, regime)
+    if signal != HOLD and regime != CHOPPY:
+        execute_trade(signal, sentinel.lot_size)
 ```
-[timestamp] regime=trending confidence=0.87 model=hmm_v3 features={atr: 0.45, adx: 32.1, ...}
-[timestamp] signal=BUY strength=0.92 indicators={ema_cross: true, rsi: 28, bb: lower}
-[timestamp] trade_executed contract=CALL stake=$10 lot=2x sentinel_confidence=0.87
-[timestamp] trade_result=win profit=$8.20
+
+### Sample Count for Stability
+
+Use `sample_count=3` or higher — Kronos generates multiple probabilistic forecast paths and averages them. This reduces variance in predictions and produces more stable signals.
+
+---
+
+## Prediction Error Tracking (Replaces Regime ML)
+
+### Rolling Metrics (maintain sliding window of last 50 predictions)
+
+```python
+class PredictionTracker:
+    def __init__(self, window_size=50):
+        self.predictions = deque(maxlen=window_size)
+        self.actuals = deque(maxlen=window_size)
+    
+    def record(self, predicted_close, actual_close):
+        self.predictions.append(predicted_close)
+        self.actuals.append(actual_close)
+    
+    @property
+    def rolling_mae(self):
+        """Mean Absolute Error — lower = model more accurate"""
+        return mean(abs(p - a) for p, a in zip(self.predictions, self.actuals))
+    
+    @property
+    def directional_accuracy(self):
+        """% of predictions where direction was correct"""
+        correct = 0
+        for i in range(1, len(self.predictions)):
+            pred_dir = self.predictions[i] > self.predictions[i-1]
+            actual_dir = self.actuals[i] > self.actuals[i-1]
+            if pred_dir == actual_dir:
+                correct += 1
+        return correct / max(len(self.predictions) - 1, 1)
+    
+    @property
+    def is_degraded(self):
+        """True if model performance is dropping"""
+        return self.directional_accuracy < 0.45  # Below coin-flip
 ```
 
-This data feeds back into model retraining and strategy optimization.
+### Regime from Predictions (Threshold-Based)
+
+```python
+def classify_regime(predictions_df, tracker):
+    pred_variance = predictions_df['close'].std()
+    pred_range = predictions_df['high'].max() - predictions_df['low'].min()
+    
+    if pred_variance < LOW_VOL_THRESH and tracker.directional_accuracy > 0.55:
+        return "trending", 0.7 + tracker.directional_accuracy * 0.3
+    elif pred_variance > HIGH_VOL_THRESH or tracker.directional_accuracy < 0.45:
+        return "choppy", 0.3
+    else:
+        return "normal", 0.5
+```
+
+Thresholds (`LOW_VOL_THRESH`, `HIGH_VOL_THRESH`) calibrated during fine-tuning backtest.
+
+---
+
+## Model Maintenance
+
+### When to Retrain
+
+- **Monthly** at minimum — synthetic index patterns may shift if Deriv updates CSRNG
+- **When prediction error spikes** — detected by Watcher, triggers auto-alert
+- **After Deriv API changes** — if tick format or behavior changes
+
+### Retraining Pipeline
+
+1. Collect latest N months of Deriv tick data
+2. Rebuild OHLCV CSVs
+3. Re-run fine-tune tokenizer + predictor
+4. Walk-forward validate new model vs old model
+5. If new model wins → deploy, archive old model
+6. If new model loses → investigate, keep old model
+
+### Model Versioning
+
+Every model prediction logged with:
+- `model_version` (e.g., `kronos-small-v3-deriv-v75-m5`)
+- `tokenizer_version` (e.g., `tokenizer-v3-deriv-v75-m5`)
+- `fine_tune_date`
+
+This enables rollback and comparison.
+
+---
+
+## What We Dropped
+
+| Dropped | Why |
+|---------|-----|
+| Hidden Markov Models (hmmlearn) | No real hidden states in CSRNG data |
+| XGBoost regime classifier | No labeled regime data available |
+| Feature engineering pipeline | Kronos handles this internally |
+| K-Means clustering | Unnecessary complexity |
+| LLM for Sentinel | Over-engineered for v1, pure Python suffices |
+| All indicator libraries (ta-lib, pandas-ta) | Kronos replaces indicator-based signals |

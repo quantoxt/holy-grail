@@ -1,63 +1,72 @@
-# Roadmap — Build Phases
+# Roadmap — Build Phases (Kronos-Era)
 
 **No coding until docs are complete.** This roadmap is for planning purposes.
 
 ---
 
-## Phase 0: Research & Documentation ✅ (Current)
+## Phase 0: Research & Kronos Fine-Tuning 🔴 CURRENT
+
+**Goal:** Fine-tune Kronos on Deriv data, validate predictions, calibrate signals.
 
 - [x] Strategic blueprint overview
 - [x] Deriv environment deep-dive
 - [x] Architecture design (3 layers)
 - [x] Tech stack decisions
 - [x] Database schema design
-- [x] AI model planning (Watcher + Sentinel)
+- [x] AI model planning (Kronos integration)
 - [x] Risk management framework
 - [x] Open-source resource audit
 - [x] Checkpoint 1 saved (2026-05-14)
-- [ ] Study Deriv indices properly (which ones, contract types, tick behavior)
-- [ ] Set up demo account on laptop
-- [ ] Pull down goldmine repos locally + inspect with AI model
-- [ ] Finalize strategy parameters (indicators, thresholds, timeframes) from proven configs
-- [ ] Contract type research (Rise/Fall vs Touch/No Touch vs Digit)
-- [ ] UI/Dashboard metrics design (after backend data structure locked)
-- [ ] Complete all open questions in docs
+- [x] Kronos forked, finetune_csv pipeline available
+- [x] Checkpoint 2 saved (2026-08-02) — Kronos redesign
+- [ ] **Set up Deriv demo account + API token**
+- [ ] **Collect 3-6 months historical tick data** for target indices (start with V75 or V100)
+- [ ] **Build tick → OHLCV CSV pipeline** — aggregate ticks into M1/M5 candles
+- [ ] **Fine-tune Kronos tokenizer** on Deriv data
+- [ ] **Fine-tune Kronos predictor** on Deriv data
+- [ ] **Walk-forward backtest** — validate fine-tuned model on held-out data
+- [ ] **Compare fine-tuned vs vanilla Kronos** — prove fine-tuning adds value
+- [ ] **Calibrate signal thresholds** (LONG_THRESHOLD, SHORT_THRESHOLD)
+- [ ] **Calibrate regime thresholds** (prediction variance limits)
+- [ ] **Benchmark inference latency** on target hardware
+- [ ] **Decide contract type** (Rise/Fall recommended — fits Kronos directional predictions)
+- [ ] **Decide target index + timeframe** (V75 M1? V100 M5?)
+- [ ] **Complete all open questions in docs**
+
+**Exit criteria:** Fine-tuned Kronos model produces >55% directional accuracy on walk-forward backtest of Deriv data. Signal thresholds calibrated. Ready to build execution pipeline.
 
 ---
 
-## Phase 1: Foundation — Soldier (Execution Layer)
+## Phase 1: Foundation — Soldier (Execution + Kronos Inference)
 
-**Goal:** Working bot that connects to Deriv, streams ticks, and executes basic trades.
+**Goal:** Working bot that connects to Deriv, streams ticks, runs Kronos, and executes trades on demo.
 
 1. **Project setup** — folder structure, dependencies, config management
 2. **Deriv API connection** — WebSocket connection, reconnection handling
 3. **Tick streaming** — real-time tick ingestion from Deriv
-4. **Tick → Candle builder** — aggregate ticks into OHLC candles (M1, M5)
-5. **Indicator engine** — calculate EMA, RSI, Bollinger Bands, ATR, ADX
-6. **Signal generator** — detect trading signals from indicators
+4. **Tick → OHLCV builder** — aggregate ticks into candles (M1 or M5)
+5. **Kronos inference wrapper** — load fine-tuned model, predict on candle close
+6. **Signal extraction** — compare predicted close vs current → BUY/SELL/HOLD
 7. **Trade executor** — place trades via Deriv API (proposal → buy)
-8. **Supabase logging** — log ticks, candles, indicators, signals, trades
-9. **Basic dashboard** — web view of current state, recent trades
+8. **Supabase logging** — log ticks, candles, predictions, signals, trades
+9. **Prediction error tracker** — rolling MAE + directional accuracy
 10. **Paper trading mode** — everything above on demo account
 
-**Exit criteria:** Bot runs on demo account, places trades based on fixed rules, logs everything to Supabase.
+**Exit criteria:** Bot runs on demo account, Kronos predicts each candle close, generates signals, executes trades, logs everything to Supabase. Running for 1+ week continuously.
 
 ---
 
-## Phase 2: Intelligence — Watcher (Regime Detection)
+## Phase 2: Intelligence — Watcher (Confidence Layer)
 
-**Goal:** AI layer that classifies market regime and acts as kill switch.
+**Goal:** Extract regime from Kronos predictions, act as kill switch.
 
-1. **Feature engineering** — extract regime features from candle data (ATR, ADX, entropy, BB width, etc.)
-2. **Historical data collection** — fetch large tick history from Deriv for training
-3. **HMM training** — train Hidden Markov Model on feature data (3 regimes)
-4. **Walk-forward validation** — test model accuracy on unseen data
-5. **Real-time regime classifier** — integrate into live bot pipeline
-6. **Kill switch integration** — Soldier pauses when regime = choppy
-7. **Regime logging** — log all classifications to Supabase for audit
-8. **Performance comparison** — bot with vs without regime detection
+1. **Regime classifier** — threshold-based (prediction variance + error → trending/choppy/normal)
+2. **Kill switch integration** — Soldier pauses when regime = choppy
+3. **Confidence scoring** — composite from Kronos variance + accuracy + prediction magnitude
+4. **Regime logging** — log all classifications to Supabase for audit
+5. **Performance comparison** — bot with vs without regime filtering
 
-**Exit criteria:** Watcher correctly identifies regimes in real-time. Bot stops trading in choppy conditions. Measurable improvement in win rate vs Phase 1.
+**Exit criteria:** Watcher correctly identifies unfavorable conditions. Bot stops trading when Kronos is unreliable. Measurable improvement in win rate vs Phase 1 (no regime filter).
 
 ---
 
@@ -66,31 +75,30 @@
 **Goal:** Dynamic risk management with confidence-based lot scaling.
 
 1. **Kill switch rules** — implement hard limits (daily loss, drawdown, consecutive losses)
-2. **Confidence scoring** — weighted composite from regime, indicators, performance, volatility
+2. **Kronos-based confidence scoring** — weighted composite from prediction confidence, accuracy, performance
 3. **Lot scaling** — map confidence → lot multiplier (1x to 5x)
 4. **Performance monitoring** — rolling P&L, win rate by regime, anomaly detection
-5. **LLM integration** — GLM API for daily summaries, anomaly analysis, alert context
-6. **Telegram alerts** — real-time notifications for trades, kill switches, anomalies
-7. **Daily report generation** — automated performance summary
+5. **Telegram alerts** — real-time notifications for trades, kill switches, anomalies
+6. **Daily report generation** — automated performance summary
 
-**Exit criteria:** Sentinel manages risk autonomously. Lot sizes scale with confidence. Hard limits enforced. Telegram alerts working.
+**Exit criteria:** Sentinel manages risk autonomously. Lot sizes scale with Kronos confidence. Hard limits enforced. Telegram alerts working.
 
 ---
 
-## Phase 4: Hardening & Optimization
+## Phase 4: Hardening & Dashboard
 
-**Goal:** Production-ready system.
+**Goal:** Production-ready system with monitoring UI.
 
-1. **Model retraining pipeline** — automated weekly/monthly HMM retraining
-2. **XGBoost regime model** — train supervised model once labeled data accumulated
-3. **Ensemble regime detection** — combine HMM + XGBoost
-4. **Walk-forward backtesting** — comprehensive strategy validation
+1. **Vue dashboard build** — 6 views (Dashboard, Trades, Regime, Risk, Config, Settings)
+2. **FastAPI backend** — REST endpoints + WebSocket events
+3. **Model retraining pipeline** — automated monthly Kronos retrain on latest data
+4. **Walk-forward backtesting tool** — comprehensive strategy validation
 5. **VPS deployment** — move to dedicated server near Deriv
-6. **Monitoring dashboard** — full web UI for real-time monitoring
-7. **Error handling** — graceful degradation, auto-recovery, dead letter queues
-8. **Security** — API key management, encrypted connections, access control
+6. **Docker single-container** — multi-stage build (Vue → Python + Kronos)
+7. **Error handling** — graceful degradation, auto-recovery
+8. **Security** — API key management, encrypted connections
 
-**Exit criteria:** Bot runs reliably on VPS for 2+ weeks on demo without intervention.
+**Exit criteria:** Bot runs reliably on VPS for 2+ weeks on demo without intervention. Dashboard shows live state. Docker deploy works.
 
 ---
 
@@ -103,7 +111,8 @@
 3. **Strict daily limits** — tight loss limits
 4. **2-week live trial** — validate real execution (slippage, fills, latency)
 5. **Performance audit** — compare live vs demo vs backtest
-6. **Gradual scaling** — increase capital and enable lot scaling only after proven results
+6. **Kronos accuracy monitoring** — track if live predictions match backtest accuracy
+7. **Gradual scaling** — increase capital and enable lot scaling only after proven results
 
 **Exit criteria:** 1 month of profitable live trading with acceptable drawdown.
 
@@ -113,10 +122,10 @@
 
 **Goal:** Ongoing management of the autonomous hedge fund.
 
-- Weekly model retraining
-- Monthly strategy review
+- Monthly Kronos retraining on latest Deriv data
+- Walk-forward validation of each retrained model
 - Performance reporting
-- Regime drift detection
+- Prediction accuracy drift detection
 - Infrastructure maintenance
 - Gradual capital scaling
 
@@ -133,10 +142,10 @@ Each phase completes fully before the next begins. No skipping to live trading w
 ## Dependencies Between Phases
 
 ```
-Phase 0 (Docs) → Phase 1 (Soldier) → Phase 2 (Watcher) → Phase 3 (Sentinel)
+Phase 0 (Fine-Tuning) → Phase 1 (Soldier) → Phase 2 (Watcher) → Phase 3 (Sentinel)
                                                               │
                                                               ▼
-                                                    Phase 4 (Hardening)
+                                                    Phase 4 (Dashboard + Hardening)
                                                               │
                                                               ▼
                                                     Phase 5 (Live Trading)
@@ -145,4 +154,17 @@ Phase 0 (Docs) → Phase 1 (Soldier) → Phase 2 (Watcher) → Phase 3 (Sentinel
                                                     Phase 6 (Continuous)
 ```
 
-Each phase produces something testable. No phase depends on future phases to function.
+**Phase 0 is the gate.** Nothing starts until Kronos is validated on Deriv data. This is the highest-leverage work — get the prediction engine right and everything downstream is easier.
+
+---
+
+## What Changed vs Original Roadmap
+
+| Original | Kronos-Era |
+|----------|-----------|
+| Phase 0: study indices, pick strategy, pull repos | Phase 0: fine-tune Kronos on Deriv data, validate |
+| Phase 1: build indicator engine, signal gen, executor | Phase 1: build Kronos inference, thin signal layer, executor |
+| Phase 2: train HMM, validate regime, build kill switch | Phase 2: extract regime from predictions, build kill switch |
+| Phase 3: same (Sentinel) | Phase 3: same but Kronos-derived confidence |
+| Phase 4: hardening + retraining + VPS | Phase 4: + dashboard, Kronos retrain pipeline |
+| Frontend was a separate plan | Now integrated as Phase 4 |
