@@ -88,20 +88,23 @@ holy-grail/
 │       ├── finetune_tokenizer.py
 │       ├── finetune_base_model.py
 │       └── configs/
+├── providers/           # Market Provider abstraction (DESIGNED, NOT YET BUILT)
+│   ├── base.py          # MarketProvider ABC (interface)
+│   ├── deriv.py         # DerivProvider — Phase 1 (synthetic mode)
+│   └── exchange.py      # ExchangeProvider — FUTURE (live markets)
 ├── soldier/             # Layer 1 — Execution engine
-│   ├── connection.py   # Deriv WebSocket management
-│   ├── candles.py      # Tick → OHLCV aggregation (replaces indicators.py)
-│   ├── executor.py     # Trade execution logic
+│   ├── candles.py      # Tick → OHLCV aggregation
+│   ├── executor.py     # Trade execution (calls Market Provider)
 │   └── signals.py      # Prediction → BUY/SELL signal extraction
-├── watcher/             # Layer 2 — Confidence/Regime (simplified)
-│   ├── regime.py       # Regime from Kronos variance + error (no ML)
+├── watcher/             # Layer 2 — Confidence/Regime (market-agnostic)
+│   ├── regime.py       # Regime from Kronos variance + error
 │   └── tracker.py       # Rolling prediction error tracking
-├── sentinel/            # Layer 3 — Risk management
+├── sentinel/            # Layer 3 — Risk management (market-agnostic)
 │   ├── risk.py          # Risk calculations, drawdown tracking
 │   ├── confidence.py   # Kronos-based confidence scoring
 │   └── scaler.py       # Lot size scaling logic
 ├── shared/
-│   ├── config.py       # Configuration management
+│   ├── config.py       # Configuration (market_mode, model_version, thresholds)
 │   ├── database.py     # Supabase connection & logging
 │   ├── models.py       # Data models (trades, predictions, ticks)
 │   └── telegram.py     # Alert system
@@ -111,8 +114,10 @@ holy-grail/
 │   └── ws/
 ├── frontend/            # Vue SPA dashboard
 ├── research/             # Fine-tuning experiments, backtesting
-│   ├── data/            # Deriv historical OHLCV CSVs
+│   ├── data/            # Historical OHLCV CSVs (Deriv + future live data)
 │   ├── experiments/     # Fine-tune configs, results
+│   │   ├── synthetic/   # Deriv fine-tuning experiments
+│   │   └── live/        # FUTURE: Exchange fine-tuning experiments
 │   └── notebooks/       # Analysis Jupyter notebooks
 ├── tests/
 ├── .env.example
@@ -124,11 +129,15 @@ holy-grail/
 
 | Before | After |
 |--------|-------|
+| `soldier/connection.py` | Moved to `providers/deriv.py` (Market Provider pattern) |
 | `soldier/indicators.py` | Removed — Kronos handles this |
 | `soldier/signals.py` | Simplified — prediction threshold logic |
 | `watcher/features.py` | Removed — no feature engineering needed |
 | `watcher/model.py` | Removed — no HMM/XGBoost model |
 | `watcher/classifier.py` | Replaced by `regime.py` (threshold-based) |
 | N/A | `kronos/` — new, foundation model code |
-| N/A | `research/data/` — Deriv historical data for fine-tuning |
-| N/A | `research/experiments/` — fine-tune experiments |
+| N/A | `providers/base.py` — Market Provider interface (designed, not built) |
+| N/A | `providers/deriv.py` — Deriv implementation |
+| N/A | `providers/exchange.py` — Future live market implementation |
+| N/A | `research/data/` — Historical data (split by market type) |
+| N/A | `research/experiments/` — Fine-tune experiments (split by market type) |

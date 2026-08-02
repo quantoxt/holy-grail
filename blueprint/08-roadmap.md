@@ -131,6 +131,56 @@
 
 ---
 
+## Phase 7: Live Market Support (Future — Designed, Not Yet Built)
+
+**Goal:** Add live exchange trading alongside synthetic mode.
+
+### Prerequisites
+- Phases 0-6 complete and proven on synthetic
+- Kronos pipeline validated end-to-end
+- Decision on which exchange(s) to support (Binance, KuCoin, etc.)
+
+### What Needs to Be Built
+1. **ExchangeProvider** — implement `MarketProvider` interface for chosen exchange
+   - REST/WebSocket API for tick streaming + order execution
+   - Order book handling (bids/asks, spreads)
+   - Account management (balances, positions)
+2. **Live market Kronos fine-tuning** — fine-tune separate model on live market data
+   - Collect historical OHLCV from exchange
+   - Fine-tune tokenizer + predictor
+   - Walk-forward validate
+   - Calibrate signal thresholds for live market behavior
+3. **Live-specific risk adjustments**
+   - Spread/slippage modeling
+   - Liquidity checks (don't trade illiquid pairs)
+   - Market hours awareness (bot pauses when market closed)
+   - News event handling (optional — pause around major events)
+4. **Dashboard updates**
+   - Market mode switcher (synthetic / live)
+   - Per-mode model selector
+   - Per-mode threshold config
+   - Combined P&L view (synthetic + live)
+
+### What Does NOT Need to Be Built
+- Kronos inference code — reuse, different model weights only
+- Signal extraction logic — same thresholds, different values
+- Watcher — market-agnostic, no changes
+- Sentinel — market-agnostic, no changes
+- Supabase schema — already supports via `model_version` naming
+- Vue dashboard components — reuse all, add market switcher only
+
+### Model Versioning Convention
+```
+kronos-small-v3-deriv-v75-m5       ← Synthetic mode
+kronos-small-v3-deriv-v100-m1      ← Synthetic mode (different index/TF)
+kronos-small-v3-binance-btcusdt-m5  ← Live mode
+kronos-small-v3-binance-ethusdt-m5  ← Live mode (different pair)
+```
+
+**Exit criteria:** Live mode functional on demo exchange account. Kronos fine-tuned and validated on live market data. Switching between modes works atomically.
+
+---
+
 ## No Timeline
 
 **Build philosophy:** No deadlines. Build until satisfied. Rush leads to blown accounts.
@@ -142,19 +192,24 @@ Each phase completes fully before the next begins. No skipping to live trading w
 ## Dependencies Between Phases
 
 ```
-Phase 0 (Fine-Tuning) → Phase 1 (Soldier) → Phase 2 (Watcher) → Phase 3 (Sentinel)
+Phase 0 (Fine-Tuning, Synthetic) → Phase 1 (Soldier) → Phase 2 (Watcher) → Phase 3 (Sentinel)
                                                               │
                                                               ▼
                                                     Phase 4 (Dashboard + Hardening)
                                                               │
                                                               ▼
-                                                    Phase 5 (Live Trading)
+                                                    Phase 5 (Live Trading - Synthetic)
                                                               │
                                                               ▼
-                                                    Phase 6 (Continuous)
+                                                    Phase 6 (Continuous - Synthetic)
+                                                              │
+                                                              ▼ (future, after synthetic proven)
+                                                    Phase 7 (Live Market Support)
 ```
 
 **Phase 0 is the gate.** Nothing starts until Kronos is validated on Deriv data. This is the highest-leverage work — get the prediction engine right and everything downstream is easier.
+
+**Phase 7 is optional future work.** Architecture designed to support it, but no resources allocated until synthetic mode is proven profitable.
 
 ---
 
@@ -168,3 +223,4 @@ Phase 0 (Fine-Tuning) → Phase 1 (Soldier) → Phase 2 (Watcher) → Phase 3 (S
 | Phase 3: same (Sentinel) | Phase 3: same but Kronos-derived confidence |
 | Phase 4: hardening + retraining + VPS | Phase 4: + dashboard, Kronos retrain pipeline |
 | Frontend was a separate plan | Now integrated as Phase 4 |
+| N/A | Phase 7: Live market support (designed, not built) |

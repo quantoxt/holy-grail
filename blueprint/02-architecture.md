@@ -1,23 +1,66 @@
 # Three-Layer Hybrid Intelligence Architecture (Kronos-Era)
 
-The "Sovereign-Subject" Model — Kronos foundation model as the core intelligence, with execution and risk management layered on top.
+The "Sovereign-Subject" Model — Kronos foundation model as the core intelligence, with execution and risk management layered on top. Market-agnostic by design.
+
+---
+
+## Market Abstraction Layer (Designed, Not Yet Built)
+
+Before the three layers, there's a **Market Provider** abstraction that decouples the bot from any specific data source or exchange:
+
+```
+┌─────────────────────────────────────┐
+│  Market Provider (interface)        │
+├──────────────┬──────────────────────┤
+│ DerivProvider│ ExchangeProvider     │
+│ (synthetic)  │ (live - future)      │
+├──────────────┴──────────────────────┤
+│ - tick_stream() → async tick feed   │
+│ - get_candles(symbol, tf) → OHLCV  │
+│ - buy(signal) → trade result       │
+│ - sell(trade_id) → close result    │
+│ - get_balance() → float            │
+│ - get_positions() → list            │
+└─────────────────────────────────────┘
+```
+
+The Soldier, Watcher, and Sentinel call the Market Provider interface — they never touch Deriv API or exchange API directly.
+
+**Phase 1 builds only `DerivProvider`.** `ExchangeProvider` is a future implementation.
+
+### Switch Mechanism
+
+```python
+# config.py
+market_mode = "synthetic"  # or "live" (future)
+
+# Switch is atomic: config change + model reload
+if market_mode == "synthetic":
+    provider = DerivProvider(config.deriv)
+    kronos_model = load_model("kronos-v3-deriv-v75-m5")
+    thresholds = config.deriv_thresholds
+else:
+    provider = ExchangeProvider(config.exchange)
+    kronos_model = load_model("kronos-v3-btcusdt-m5")
+    thresholds = config.exchange_thresholds
+```
 
 ---
 
 ## Layer 1: The Soldier (Execution + Prediction Engine)
 
-**Technology:** Deriv WebSocket API (Python) + Kronos (PyTorch)  
+**Technology:** Market Provider (Python) + Kronos (PyTorch)  
 **Speed:** Seconds (per candle close — not per tick)  
 **Role:** Predict future candles via Kronos, extract trade signals, execute emotionlessly
 
-### How It Works Now
+### How It Works Now (Synthetic Mode)
 
 Every candle close (e.g., M1):
 1. Feed last 512 candles of OHLCV data to Kronos
 2. Kronos predicts next N candles (OHLCV)
 3. Signal extraction logic compares predicted close vs current price
 4. If predicted move exceeds threshold → generate BUY or SELL signal
-5. Execute trade via Deriv WebSocket API
+5. Execute trade via Market Provider (Deriv WebSocket in synthetic mode)
 6. Log everything
 
 ### Responsibilities
@@ -199,17 +242,17 @@ Same rule as before:
 
 ---
 
-## Layer Communication Flow (Kronos-Era)
+## Layer Communication Flow (Kronos-Era, Multi-Market)
 
 ```
-Deriv API (WebSocket)
+Market Provider (Deriv or Exchange)
     │
     ▼
 ┌─────────────────────────────────────┐
 │  Layer 1: Soldier                   │  ← Tick stream → OHLCV candles
 │  (Python + Kronos inference)        │  ← Kronos predicts future candles
 │                                     │  ← Thin signal logic → BUY/SELL/HOLD
-│                                     │  → Trade execution via Deriv API
+│                                     │  → Trade execution via Market Provider
 └─────────┬───────────────────────────┘
           │ predictions + variance + error tracking
           ▼
@@ -217,13 +260,14 @@ Deriv API (WebSocket)
 │  Layer 2: Watcher                   │  ← Extract regime from Kronos outputs
 │  (Pure Python, threshold-based)     │  → Trending/choppy/normal classification
 │  (NO ML model needed)               │  → Kill switch signal
+│  (Market-agnostic)                   │
 └─────────┬───────────────────────────┘
           │ regime + kronos_confidence
           ▼
 ┌─────────────────────────────────────┐
 │  Layer 3: Sentinel                  │  ← Performance audit, risk scaling
 │  (Rule-based Python)               │  → Lot size adjustment, kill confirm
-│                                     │  → Telegram alerts
+│  (Market-agnostic)                   │  → Telegram alerts
 └─────────┬───────────────────────────┘
           │
           ▼
@@ -240,4 +284,5 @@ The original design planned GLM API for Sentinel anomaly detection. **Shelved to
 - **Kronos (quantoxt/Kronos)** — foundation model, finetune_csv pipeline, backtest framework
 - **Telegram bot** — Quantoxt already has a TG bot project, reusable for alerts
 - **Local Supabase** — Docker install ready, no cloud dependency
-- **Goldmine repos** — Deriv WebSocket patterns, tick→candle pipeline (for Soldier only, not strategy)
+- **Goldmine repos** — Deriv WebSocket patterns, tick→candle pipeline (for DerivProvider only, not strategy)
+- **Market Provider pattern** — abstraction layer for future live market support
