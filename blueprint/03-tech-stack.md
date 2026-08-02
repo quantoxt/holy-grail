@@ -50,31 +50,144 @@
 - `lightweight-charts` (TradingView) — Candlestick charts in dashboard
 - Telegram bot for mobile alerts
 
-## Infrastructure
+## Infrastructure & Hosting
 
-### Hardware Requirements (Kronos-specific)
+### Deployment Stages
 
-Kronos inference needs consideration:
+| Stage | Environment | Purpose | When |
+-------|-----------|---------|------|
+| **Local dev** | Main laptop (Quantoxt's machine) | Build, test, fine-tune Kronos, Phase 0-3 | Phase 0-3 |
+| **Local VPS** | Second laptop (always-on, WiFi) | Persistent demo trading, Phase 4-6 | Phase 4+ |
+| **Cloud VPS** | Rental server near Deriv | Live trading with real money | Phase 5+ (future) |
 
-| Model | Params | GPU/CPU | Inference Time (est.) | Notes |
-|-------|--------|---------|----------------------|-------|
-| Kronos-mini | 4.1M | CPU OK | <100ms | 2048 context, less accurate |
-| Kronos-small | 24.7M | GPU preferred | ~200ms | 512 context, good balance |
-| Kronos-base | 102.3M | GPU required | ~500ms | 512 context, most accurate |
+### Stage 1: Local Development (Main Laptop)
 
-**Recommendation:** Start with Kronos-small on CPU for development. Move to Kronos-base on GPU for live trading. Benchmark during Phase 0.
+- Build and test everything here first
+- Run Kronos fine-tuning experiments
+- Validate predictions on Deriv demo data
+- No 24/7 uptime requirement — stop when you stop working
 
-### VPS Requirements
-- **Location:** Near Deriv servers (check Deriv docs for server locations)
-- **OS:** Ubuntu 22.04 LTS or similar Linux
-- **RAM:** 4-8 GB (PyTorch + Kronos model in memory)
-- **CPU:** 4 cores minimum (async bot + Kronos inference)
-- **GPU:** Optional for dev, recommended for live (NVIDIA, CUDA 12+)
-- **Storage:** 20 GB+ (tick data + model checkpoints)
-- **Network:** Low latency, stable connection
+### Stage 2: Local VPS (Second Laptop — Always On)
 
-### Why VPS Near Deriv?
-Execution latency matters. Every millisecond between signal detection and order execution is slippage. A VPS in the same data center region as Deriv's matching engine minimizes this.
+**Hardware specs:**
+- **CPU:** Intel Core i5 @ 2.50GHz max
+- **RAM:** 8GB DDR3/DDR4
+- **Storage:** 1TB HDD/SSD
+- **GPU 1:** Intel HD Graphics 2GB
+- **GPU 2:** AMD Radeon 4GB
+- **Network:** WiFi via local router (needs outbound internet)
+
+**OS:** Linux (Ubuntu 22.04 LTS recommended — native Docker, systemd, Python 3.10+)
+
+**GPU assessment:**
+- Intel HD 2GB — **No PyTorch support.** Not usable.
+- AMD Radeon 4GB — **Limited PyTorch support via ROCm (Linux only), unstable.** Not recommended.
+- **Conclusion: CPU-only inference.** Both GPUs are not useful for this workload.
+
+**Kronos on CPU (this hardware):**
+
+| Model | Params | RAM | CPU Inference (est.) | Candle Fit? |
+|-------|--------|-----|----------------------|------------|
+| Kronos-mini | 4.1M | ~100MB | <100ms | ✅ Trivial |
+| Kronos-small | 24.7M | ~200MB | 200-500ms | ✅ Comfortable (M1 = 60s budget) |
+| Kronos-base | 102.3M | ~500MB | 1-3s | ⚠️ Works but slow (M1 still OK, M5 very comfortable) |
+
+**Recommendation for this hardware:** Kronos-small on CPU. Good accuracy-to-speed balance. Upgrade to Kronos-base on CPU if validation shows accuracy gain is worth the wait.
+
+**Runtime RAM budget:**
+
+| Component | RAM Usage |
+|-----------|-----------|
+| PyTorch + Kronos model (small) | ~300-500MB |
+| Python bot + asyncio event loop | ~100-200MB |
+| Supabase (PostgreSQL Docker container) | ~500MB-1GB |
+| FastAPI + Vue static files | ~100MB |
+| OS overhead (Ubuntu desktop/server) | ~1-2GB |
+| **Total** | **~2-3GB** |
+| **Available** | **8GB (5GB free)** |
+
+**Verdict:** RAM is comfortable. No pressure.
+
+**Storage:**
+- Kronos models: ~50-200MB each (3-4 variants = ~500MB)
+- Supabase/PostgreSQL data: grows with tick data
+  - M1 ticks: ~2/sec × 86400 sec/day = ~170K rows/day per symbol
+  - After 30 days: ~5M rows (~500MB-1GB with indexes)
+  - Archive old ticks to Parquet: keeps DB lean
+- Fine-tuning checkpoints: ~200MB per experiment
+- Logs: negligible
+- **Year 1 estimate:** 10-20GB total. Storage is not a concern.
+
+**Network requirements:**
+- **Outbound internet required** — bot connects to `ws.derivws.com` for ticks and trades
+- **No inbound ports needed** — all connections are outbound (Deriv, Telegram, HuggingFace for model downloads)
+- **No port forwarding needed** — dashboard accessed locally or via local network
+- **No static IP needed** — outbound connections don't care about your IP
+- **If router loses internet → bot stops.** This is true regardless of where you host.
+- **Latency:** Local WiFi → ISP → Deriv servers. Estimated 50-150ms. For M1 trading (60s candle intervals), this is negligible.
+
+**Laptop setup checklist:**
+- [ ] Install Ubuntu 22.04 LTS (or use existing Linux)
+- [ ] Disable sleep: `systemctl mask sleep.target suspend.target hibernate.target`
+- [ ] Set up systemd service for auto-start on boot
+- [ ] Install Docker (for Supabase)
+- [ ] Install Python 3.10+
+- [ ] Clone repo, install dependencies
+- [ ] Test outbound connection: `wscat -c wss://ws.derivws.com/websockets/v3?app_id=1089`
+- [ ] Set up Telegram bot token + chat ID in `.env`
+
+**systemd service (example):**
+```ini
+# /etc/systemd/system/holy-grail.service
+[Unit]
+Description=Holy Grail Trading Bot
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=holygrail
+WorkingDirectory=/opt/holy-grail
+ExecStart=/opt/holy-grail/venv/bin/python -m soldier.run
+Restart=always
+RestartSec=10
+EnvironmentFile=/opt/holy-grail/.env
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### Stage 3: Cloud VPS (Future — Live Trading)
+
+Move to a rental VPS only when going live with real money.
+
+**Requirements:**
+- **Location:** Near Deriv servers (check Deriv docs for server region)
+- **OS:** Ubuntu 22.04 LTS
+- **RAM:** 4-8GB
+- **CPU:** 2-4 cores
+- **GPU:** Optional (NVIDIA, CUDA 12+) — helps if using Kronos-base
+- **Storage:** 20GB+ SSD
+- **Network:** Low latency, stable, 99.9% uptime SLA
+
+**Why cloud VPS for live:**
+- Guaranteed uptime (no power outages, no sleep mode)
+- Lower latency to Deriv (same DC region)
+- Professional environment (monitoring, backups)
+- **But:** Not needed for dev/demo. Don't pay for it until you need it.
+
+### Why Local Laptop VPS Works for Dev/Demo
+
+| Concern | Cloud VPS | Local Laptop VPS |
+|---------|-----------|------------------|
+| Uptime | 99.9% | ~95% (power/network dependent) |
+| Latency to Deriv | ~10-30ms | ~50-150ms |
+| Cost | $10-30/month | $0 |
+| GPU | Optional (can rent NVIDIA) | Intel HD + AMD (not useful) |
+| Convenience | SSH from anywhere | Same room, easy physical access |
+| Risk | Provider outage, billing | Power cut, WiFi drop, OS crash |
+
+**For demo trading, the laptop is fine.** A 50-100ms latency difference doesn't matter when you're trading on M1 candles. If the laptop crashes, no real money is at risk. Fix it, restart, move on.
 
 ## Project Structure (Updated)
 
