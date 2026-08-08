@@ -3,9 +3,18 @@
 Unlike Settings (immutable, from .env), these are PATCHed live from the dashboard
 via the API. The Sentinel reads from this object, so changing a value here
 takes effect on the next trade cycle — no restart needed.
+
+CROSS-PROCESS SYNC: the API (dashboard) and the bot (soldier.loop) are separate
+processes. State is backed by the `bot_config` Supabase row (single row, id=1):
+  * update()  → mutates in memory then persist()s to bot_config   (API side)
+  * refresh() → re-reads bot_config into self                      (bot side)
+The bot calls refresh() on boot and every ~5s from its telemetry task, so
+dashboard edits (symbols, risk params, start/stop) reach the running bot
+within seconds — genuinely hot, across processes.
 """
+import json
 from dataclasses import dataclass, field
-from datetime import date, timezone
+from datetime import timezone
 from threading import Lock
 
 
@@ -46,18 +55,61 @@ class RuntimeConfig:
     active_symbols: list = field(default_factory=lambda: ["XAUUSD", "XAGUSD", "EURUSD", "GBPUSD"])
 
     _lock: Lock = field(default_factory=Lock, repr=False)
+    _client: object = field(default=None, repr=False)
+
+    # ---- Supabase client (lazy; avoids import-time dep + keeps this module standalone) ----
+    @property
+    def client(self):
+        if self._client is None:
+            from supabase import create_client
+            from shared.config import settings
+            self._client = create_client(settings.supabase_url, settings.supabase_service_role_key)
+        return self._client
+
+    # ---- fields that are NOT persisted/read back from bot_config ----
+    _internal = {"_lock", "_client"}
 
     def update(self, **kwargs):
-        """PATCH values from the dashboard."""
+        """PATCH values from the dashboard, then persist to Supabase."""
         with self._lock:
             for k, v in kwargs.items():
                 if hasattr(self, k) and not k.startswith("_"):
                     setattr(self, k, v)
+        self.persist()
 
     def snapshot(self) -> dict:
-        """Read-only snapshot for the dashboard."""
+        """Read-only snapshot for the dashboard (excludes internal fields)."""
         with self._lock:
-            return {k: v for k, v in self.__dict__.items() if not k.startswith("_")}
+            return {k: v for k, v in self.__dict__.items()
+                    if not k.startswith("_") and k not in self._internal}
+
+    def persist(self):
+        """Write the full snapshot to the bot_config singleton row (id=1)."""
+        try:
+            self.client.table("bot_config").upsert(
+                {"id": 1, "config": self.snapshot(), "updated_at": "now()"}, on_conflict="id"
+            ).execute()
+        except Exception:
+            # Supabase down / not configured — keep trading on in-memory values.
+            pass
+
+    def refresh(self):
+        """Re-read bot_config(id=1) and apply to self. Called by the bot.
+        Tolerant: no-op if the row is missing or Supabase is unreachable, so a
+        fresh DB or offline DB never blocks the bot."""
+        try:
+            r = self.client.table("bot_config").select("config").eq("id", 1).limit(1).execute()
+            cfg = (r.data or [{}])[0].get("config") if r.data else None
+            if not isinstance(cfg, dict):
+                return
+            with self._lock:
+                for k, v in cfg.items():
+                    if k.startswith("_") or k in self._internal:
+                        continue
+                    if hasattr(self, k):
+                        setattr(self, k, v)
+        except Exception:
+            pass
 
     def auto_calibrate(self, balance: float, weekly_goal: float):
         """Derive risk params FROM balance + goal. Does NOT change balance/goal.
@@ -74,6 +126,7 @@ class RuntimeConfig:
             self.max_daily_loss = round(balance * 0.06, 2)
             self.max_weekly_drawdown = round(balance * 0.20, 2)
             self.max_open_positions = min(5, max(1, int(weekly_goal / (risk * 2))))
+        self.persist()
         return self.snapshot()
 
 

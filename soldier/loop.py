@@ -32,7 +32,7 @@ LOG = ROOT / "data" / "paper_log.jsonl"
 
 class Trader:
     def __init__(self, account=None):
-        self.provider = get_provider(settings.market_mode, account=account)
+        self.provider = get_provider(account=account)
         self.engine = SignalEngine()
         self.watcher = Watcher()
         self.sentinel = sentinel_inst
@@ -89,6 +89,11 @@ class Trader:
         signals = {}
         for sym in runtime.active_symbols:
             try:
+                # Graceful skip: ignore active symbols the logged-in broker doesn't offer
+                # (e.g. BTCUSD on a forex-only account) — no crash, no failed orders.
+                if hasattr(self.provider, "is_offered") and not self.provider.is_offered(sym):
+                    self.log(type="SKIP", symbol=sym, reason="not offered by broker")
+                    continue
                 candles = await self.provider.get_candles(sym, settings.timeframe, settings.lookback + 5)
                 sig = self.engine.get_signal(candles)
                 signals[sym] = sig
@@ -241,8 +246,32 @@ class Trader:
 
             del self.open[sym]
 
+    async def _telemetry(self):
+        """Near-realtime account heartbeat, independent of the (slow) trade cycle.
+        Every ~5s: pull latest dashboard config (hot-reload), then publish live
+        balance / equity / floating PnL / open positions / broker symbols to the
+        account_state row the dashboard reads. Discovery refresh is throttled."""
+        sym_refresh_every = 6   # refresh broker symbol list every 6th tick (~30s)
+        tick = 0
+        while True:
+            try:
+                await asyncio.sleep(5)
+                tick += 1
+                runtime.refresh()                                   # hot-reload dashboard edits
+                acct = await self.provider.account_summary()
+                positions = await self.provider.get_open_positions()
+                floating = round(sum(p.get("profit", 0) for p in positions), 2)
+                syms = self.provider.discover_symbols(force=(tick % sym_refresh_every == 0))
+                db.upsert_account_state(
+                    acct["login"], acct["broker"], acct["balance"], acct["equity"],
+                    acct["currency"], floating, positions, syms)
+            except Exception as e:
+                self.log(type="TELEMETRY_ERR", msg=str(e))
+
     async def run(self, cycles=None, interval_sec=300):
+        runtime.refresh()   # boot from the dashboard's last-saved config, not code defaults
         c = 0
+        telemetry = asyncio.create_task(self._telemetry())
         try:
             while cycles is None or c < cycles:
                 if not runtime.bot_running:
@@ -254,8 +283,11 @@ class Trader:
                 if (cycles is None or c < cycles) and interval_sec > 0:
                     await asyncio.sleep(interval_sec)
         finally:
+            telemetry.cancel()
             try:
-                await self.provider.ex.close()
+                mt5_shutdown = getattr(self.provider, "shutdown", None)
+                if mt5_shutdown:
+                    mt5_shutdown()
             except Exception:
                 pass
 
@@ -267,10 +299,8 @@ def main():
     p.add_argument("--account", default=None)
     args = p.parse_args()
     trader = Trader(account=args.account)
-    print(f"Holy Grail | LIVE | mode={settings.market_mode} symbols={runtime.active_symbols} "
+    print(f"Holy Grail | LIVE | symbols={runtime.active_symbols} "
           f"tf={settings.timeframe} goal=${runtime.weekly_goal}")
     asyncio.run(trader.run(cycles=args.cycles, interval_sec=args.interval))
-
-
 if __name__ == "__main__":
     main()

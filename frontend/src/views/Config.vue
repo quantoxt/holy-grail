@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 
 const config = ref<any>({})
 const weekly = ref<any>({})
@@ -11,6 +11,13 @@ const calibrating = ref(false)
 const showAddAccount = ref(false)
 const newAccount = ref({ name: '', login: 0, password: '', server: '', broker: '' })
 let timer: number
+
+// --- symbol selection (broker-discovered, curated at runtime) ---
+const discovered = ref<string[]>([])        // symbols the logged-in broker offers
+const activeBuffer = ref<string[]>([])      // working set the user is toggling
+const symbolsDirty = ref(false)             // pause server-sync once the user edits
+const symbolSearch = ref('')
+const applyingSymbols = ref(false)
 
 const fetchConfig = async () => {
   try {
@@ -24,14 +31,19 @@ const fetchConfig = async () => {
 // so polling never wipes unsaved edits in the config inputs.
 const fetchLive = async () => {
   try {
-    const [w, n, a] = await Promise.all([
+    const [w, n, a, s] = await Promise.all([
       fetch('/api/weekly').then(r => r.json()),
       fetch('/api/news').then(r => r.json()),
       fetch('/api/accounts').then(r => r.json()),
+      fetch('/api/symbols').then(r => r.json()),
     ])
     weekly.value = w
     news.value = n
     accounts.value = a
+    discovered.value = s.discovered || []
+    // Sync the working set from the server ONLY when the user isn't mid-edit,
+    // otherwise polling would clobber in-progress checkbox toggles.
+    if (!symbolsDirty.value) activeBuffer.value = [...(s.active || [])]
   } catch {}
 }
 
@@ -83,6 +95,36 @@ const control = async (action: string) => {
   await fetch(`/api/control/${action}`, { method: 'POST' })
   // Update state locally — don't refetch config (would clobber in-progress edits).
   botState.value = action === 'start' ? 'running' : action === 'pause' ? 'paused' : 'stopped'
+}
+
+// --- symbol selection ---
+const isActive = (sym: string) => activeBuffer.value.includes(sym)
+const toggleSymbol = (sym: string) => {
+  symbolsDirty.value = true
+  activeBuffer.value = isActive(sym)
+    ? activeBuffer.value.filter(s => s !== sym)
+    : [...activeBuffer.value, sym]
+}
+// symbols that are active but NOT offered by the broker (shown with a warning)
+const missingActive = computed(() =>
+  activeBuffer.value.filter(s => discovered.value.length && !discovered.value.includes(s)))
+const filteredDiscovered = computed(() => {
+  const q = symbolSearch.value.trim().toUpperCase()
+  const list = q ? discovered.value.filter(s => s.includes(q)) : discovered.value
+  // active first, then the rest
+  return [...list].sort((a, b) => Number(isActive(b)) - Number(isActive(a)))
+})
+const applySymbols = async () => {
+  applyingSymbols.value = true
+  try {
+    await fetch('/api/config', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ active_symbols: activeBuffer.value }),
+    })
+    config.value.active_symbols = [...activeBuffer.value]
+    symbolsDirty.value = false   // re-sync from server on next poll
+  } finally { applyingSymbols.value = false }
 }
 
 const addAccount = async () => {
@@ -214,6 +256,48 @@ const progressColor = (pct: number) => pct >= 100 ? 'var(--profit)' : pct >= 50 
           class="px-4 py-2 rounded font-medium" :class="saving ? 'bg-(--border)' : 'bg-(--primary) text-black'">
           {{ saving ? 'Saving...' : 'Save & Apply' }}
         </button>
+      </div>
+    </div>
+
+    <!-- Symbol selection (broker-discovered → curated active set) -->
+    <div class="bg-(--card) border border-(--border) rounded-lg p-5">
+      <div class="flex items-center justify-between mb-1">
+        <h3 class="text-sm font-medium text-(--muted) uppercase">Symbols</h3>
+        <span class="text-xs text-(--muted)">
+          {{ activeBuffer.length }} active · {{ discovered.length }} offered by broker
+        </span>
+      </div>
+      <p class="text-xs text-(--muted) mb-3">
+        Discovered from the logged-in broker. Toggle what the bot trades — applies live, no restart.
+      </p>
+
+      <!-- active-but-not-offered warning -->
+      <div v-if="missingActive.length" class="mb-3 text-xs flex items-center gap-2 text-(--warning)">
+        <span>⚠</span>
+        <span>Active but not offered by this broker: {{ missingActive.join(', ') }} (will be skipped).</span>
+      </div>
+
+      <input v-model="symbolSearch" placeholder="Search symbols…"
+        class="w-full mb-3 px-3 py-2 rounded bg-(--bg) border border-(--border) text-(--text) text-sm" />
+
+      <div v-if="discovered.length" class="grid grid-cols-3 gap-2 max-h-56 overflow-y-auto pr-1">
+        <label v-for="sym in filteredDiscovered" :key="sym"
+          class="flex items-center gap-2 p-2 rounded bg-(--bg) cursor-pointer text-sm">
+          <input type="checkbox" :checked="isActive(sym)" @change="toggleSymbol(sym)" class="w-4 h-4 rounded" />
+          <span>{{ sym }}</span>
+        </label>
+      </div>
+      <div v-else class="text-center text-(--muted) text-sm py-4">
+        No symbols discovered yet — starts once the bot connects to the broker.
+      </div>
+
+      <div class="mt-4 flex items-center gap-3">
+        <button @click="applySymbols" :disabled="!symbolsDirty || applyingSymbols"
+          class="px-4 py-2 rounded font-medium"
+          :class="(!symbolsDirty || applyingSymbols) ? 'bg-(--border)' : 'bg-(--primary) text-black'">
+          {{ applyingSymbols ? 'Applying…' : 'Apply Symbols' }}
+        </button>
+        <span v-if="symbolsDirty" class="text-xs text-(--warning)">unsaved changes</span>
       </div>
     </div>
 

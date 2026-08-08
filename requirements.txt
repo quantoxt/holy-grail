@@ -5,7 +5,6 @@
 #   uv pip install --python venv-torch/bin/python torch --index-url https://download.pytorch.org/whl/cpu
 
 python-dotenv>=1.0
-ccxt>=4.0                  # BinanceProvider (crypto)
 fastapi>=0.115             # API backend
 uvicorn>=0.30              # ASGI server
 supabase>=2.0              # Database logging

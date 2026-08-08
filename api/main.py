@@ -214,3 +214,35 @@ async def activate_account(account_id: int):
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(json.dumps(data, indent=2))
     return {"status": "activated", "account": acct}
+
+
+# ===== Live account state + broker symbols (read bot heartbeat) =====
+
+def _active_login() -> int | None:
+    """Login of the currently-active MT5 account, or None."""
+    r = sb.table("mt5_accounts").select("login").eq("is_active", True).limit(1).execute()
+    return r.data[0]["login"] if r.data else None
+
+
+@app.get("/api/account")
+async def account_state():
+    """Live account snapshot written by the bot's ~5s telemetry task.
+    Returns {} when no bot heartbeat has landed yet (dashboard shows 'awaiting bot')."""
+    login = _active_login()
+    if login is None:
+        return {}
+    r = sb.table("account_state").select("*").eq("login", login).limit(1).execute()
+    return r.data[0] if r.data else {}
+
+
+@app.get("/api/symbols")
+async def symbols():
+    """Discovered (broker-offered) + active (traded) symbol lists.
+    `discovered` comes from the bot's heartbeat (account_state.symbols of the
+    active login); `active` is the curated set from runtime config."""
+    discovered: list = []
+    login = _active_login()
+    if login is not None:
+        r = sb.table("account_state").select("symbols").eq("login", login).limit(1).execute()
+        discovered = (r.data or [{}])[0].get("symbols") or []
+    return {"discovered": discovered, "active": runtime.active_symbols}
