@@ -35,7 +35,7 @@ onUnmounted(() => clearInterval(timer))
       </button>
       <div class="mt-auto text-xs text-(--muted)">
         <div>{{ status.market_mode ?? '...' }} · {{ (status.symbols ?? []).join(', ') }}</div>
-        <div :class="status.mode === 'live' ? 'text-(--loss)' : 'text-(--muted)'">{{ status.mode ?? 'paper' }}</div>
+        <div class="text-(--profit) font-medium">● LIVE</div>
       </div>
     </aside>
     <main class="flex-1 p-6 overflow-auto">

@@ -26,15 +26,12 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 @app.get("/api/status")
 async def status():
-    """Bot mode, model, recent balance (from latest session)."""
-    r = sb.table("bot_sessions").select("*").order("started_at", desc=True).limit(1).execute()
-    sess = r.data[0] if r.data else {}
+    """Bot status — always LIVE, reads from runtime config."""
     return {
-        "market_mode": sess.get("market_mode", "crypto"),
-        "symbols": sess.get("symbols", ["BTCUSDT"]),
-        "model": sess.get("model_version", "NeoQuasar/Kronos-small"),
-        "mode": sess.get("mode", "paper"),
-        "balance": sess.get("final_balance", 0),
+        "market_mode": os.environ.get("MARKET_MODE", "forex"),
+        "symbols": runtime.active_symbols,
+        "model": "NeoQuasar/Kronos-small",
+        "mode": "LIVE",
     }
 
 
@@ -155,3 +152,65 @@ async def news():
         "upcoming": [{"title": e["title"], "currency": e["currency"],
                        "time": e["time"].isoformat()} for e in upcoming[:5]],
     }
+
+
+# ===== Auto-calibrate =====
+
+class CalibrateRequest(BaseModel):
+    balance: float
+    weekly_goal: float
+
+
+@app.post("/api/calibrate")
+async def calibrate(body: CalibrateRequest):
+    """Auto-derive all risk params from account balance + weekly goal."""
+    config = runtime.auto_calibrate(body.balance, body.weekly_goal)
+    return {"status": "calibrated", "config": config}
+
+
+# ===== MT5 Accounts (Supabase-managed) =====
+
+class AccountCreate(BaseModel):
+    name: str
+    login: int
+    password: str
+    server: str
+    broker: str = ""
+
+
+@app.get("/api/accounts")
+async def list_accounts():
+    r = sb.table("mt5_accounts").select("*").order("created_at", desc=True).execute()
+    return r.data
+
+
+@app.post("/api/accounts")
+async def add_account(body: AccountCreate):
+    r = sb.table("mt5_accounts").insert(body.dict()).execute()
+    return r.data[0] if r.data else {"error": "insert failed"}
+
+
+@app.delete("/api/accounts/{account_id}")
+async def delete_account(account_id: int):
+    sb.table("mt5_accounts").delete().eq("id", account_id).execute()
+    return {"status": "deleted"}
+
+
+@app.post("/api/accounts/{account_id}/activate")
+async def activate_account(account_id: int):
+    """Set one account as active (deactivates all others)."""
+    sb.table("mt5_accounts").update({"is_active": False}).neq("id", account_id).execute()
+    sb.table("mt5_accounts").update({"is_active": True}).eq("id", account_id).execute()
+    r = sb.table("mt5_accounts").select("*").eq("id", account_id).execute()
+    acct = r.data[0] if r.data else {}
+    # update the active account in the JSON file too (for the bot to pick up)
+    if acct:
+        import json
+        from pathlib import Path
+        p = Path(__file__).resolve().parents[1] / "data" / "mt5_accounts.json"
+        data = {"active": acct["name"], "accounts": {}}
+        data["accounts"][acct["name"]] = {
+            "login": acct["login"], "password": acct["password"], "server": acct["server"]}
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(data, indent=2))
+    return {"status": "activated", "account": acct}

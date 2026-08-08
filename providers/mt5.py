@@ -25,10 +25,32 @@ class MT5Provider(MarketProvider):
     name = "mt5"
 
     def __init__(self, account: str | None = None):
+        self._connect(account)
+        self._watched_account = self.account_name
+
+    def _connect(self, account: str | None = None):
+        """Initialize or re-initialize MT5 with the given account."""
+        try:
+            mt5.shutdown()
+        except Exception:
+            pass
         acct = get_account(account)
         if not mt5.initialize(login=acct["login"], password=acct["password"], server=acct["server"]):
             raise RuntimeError(f"MT5 initialize failed: {mt5.last_error}")
         self.account_name = account or "active"
+        self._login = acct["login"]
+
+    def check_account_switch(self) -> bool:
+        """Returns True if the active account changed (caller should reconnect)."""
+        try:
+            current = get_account(None)  # reads the active account
+            return current.get("login") != self._login
+        except Exception:
+            return False
+
+    def reconnect(self):
+        """Hot-swap to the currently active account."""
+        self._connect(None)  # reconnect with whatever is active now
 
     # --- data ---
     async def get_candles(self, symbol, timeframe, limit):
@@ -99,3 +121,18 @@ class MT5Provider(MarketProvider):
         return [{"ticket": p.ticket, "symbol": p.symbol,
                  "type": "BUY" if p.type == mt5.POSITION_TYPE_BUY else "SELL",
                  "volume": p.volume, "entry": p.price_open} for p in (positions or [])]
+
+    async def get_symbol_info(self, symbol: str) -> dict:
+        """Live contract specs from MT5 — accurate per broker."""
+        info = mt5.symbol_info(symbol)
+        if info is None:
+            mt5.symbol_select(symbol, True)
+            info = mt5.symbol_info(symbol)
+        if info is None:
+            return {"contract_size": 1.0, "volume_min": 0.01, "volume_step": 0.01}
+        return {
+            "contract_size": info.trade_contract_size,
+            "volume_min": info.volume_min,
+            "volume_step": info.volume_step,
+            "point_size": info.point,
+        }
