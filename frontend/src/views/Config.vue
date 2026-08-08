@@ -12,19 +12,26 @@ const showAddAccount = ref(false)
 const newAccount = ref({ name: '', login: 0, password: '', server: '', broker: '' })
 let timer: number
 
-const fetchData = async () => {
+const fetchConfig = async () => {
   try {
-    const [c, w, n, a] = await Promise.all([
-      fetch('/api/config').then(r => r.json()),
+    const c = await fetch('/api/config').then(r => r.json())
+    config.value = c
+    botState.value = c.trading_paused ? 'paused' : (c.bot_running ? 'running' : 'stopped')
+  } catch {}
+}
+
+// Live dashboard stats only — does NOT touch the editable form fields,
+// so polling never wipes unsaved edits in the config inputs.
+const fetchLive = async () => {
+  try {
+    const [w, n, a] = await Promise.all([
       fetch('/api/weekly').then(r => r.json()),
       fetch('/api/news').then(r => r.json()),
       fetch('/api/accounts').then(r => r.json()),
     ])
-    config.value = c
     weekly.value = w
     news.value = n
     accounts.value = a
-    botState.value = c.trading_paused ? 'paused' : (c.bot_running ? 'running' : 'stopped')
   } catch {}
 }
 
@@ -46,13 +53,13 @@ const save = async () => {
         active_symbols: config.value.active_symbols,
       }),
     })
-  } finally { saving.value = false; await fetchData() }
+  } finally { saving.value = false; await fetchConfig() }
 }
 
 const calibrate = async () => {
   calibrating.value = true
   try {
-    await fetch('/api/calibrate', {
+    const res = await fetch('/api/calibrate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -60,12 +67,22 @@ const calibrate = async () => {
         weekly_goal: Number(config.value.weekly_goal),
       }),
     })
-  } finally { calibrating.value = false; await fetchData() }
+    if (!res.ok) throw new Error(`API ${res.status}`)
+    const data = await res.json()
+    if (data.config) {
+      // directly update from API response — the derived risk params
+      config.value = { ...config.value, ...data.config }
+    }
+  } catch (e) {
+    console.error('calibrate failed:', e)
+    alert('Calibrate failed — is the API running on :8000?')
+  } finally { calibrating.value = false }
 }
 
 const control = async (action: string) => {
   await fetch(`/api/control/${action}`, { method: 'POST' })
-  await fetchData()
+  // Update state locally — don't refetch config (would clobber in-progress edits).
+  botState.value = action === 'start' ? 'running' : action === 'pause' ? 'paused' : 'stopped'
 }
 
 const addAccount = async () => {
@@ -76,20 +93,24 @@ const addAccount = async () => {
   })
   newAccount.value = { name: '', login: 0, password: '', server: '', broker: '' }
   showAddAccount.value = false
-  await fetchData()
+  await fetchLive()
 }
 
 const activateAccount = async (id: number) => {
   await fetch(`/api/accounts/${id}/activate`, { method: 'POST' })
-  await fetchData()
+  await fetchLive()
 }
 
 const deleteAccount = async (id: number) => {
   await fetch(`/api/accounts/${id}`, { method: 'DELETE' })
-  await fetchData()
+  await fetchLive()
 }
 
-onMounted(() => { fetchData(); timer = setInterval(fetchData, 5000) })
+onMounted(() => {
+  fetchConfig()           // load the form once
+  fetchLive()             // load live stats once
+  timer = setInterval(fetchLive, 5000)   // poll ONLY live stats, not the form
+})
 onUnmounted(() => clearInterval(timer))
 
 const progressColor = (pct: number) => pct >= 100 ? 'var(--profit)' : pct >= 50 ? 'var(--warning)' : 'var(--primary)'
