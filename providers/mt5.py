@@ -27,6 +27,7 @@ class MT5Provider(MarketProvider):
     def __init__(self, account: str | None = None):
         self._connect(account)
         self._watched_account = self.account_name
+        self._symbols: set[str] | None = None   # broker-discovered symbol cache
 
     def _connect(self, account: str | None = None):
         """Initialize or re-initialize MT5 with the given account."""
@@ -51,6 +52,34 @@ class MT5Provider(MarketProvider):
     def reconnect(self):
         """Hot-swap to the currently active account."""
         self._connect(None)  # reconnect with whatever is active now
+
+    def shutdown(self):
+        """Release the MT5 terminal connection on bot exit."""
+        try:
+            mt5.shutdown()
+        except Exception:
+            pass
+
+    # --- broker symbol discovery (single broker: forex/metals/crypto-CFD) ---
+    def discover_symbols(self, force: bool = False) -> list[str]:
+        """Tradeable symbol names offered by this broker (visible in Market Watch).
+        Cached on the provider; pass force=True to refresh (the telemetry task
+        does this periodically). Used by the loop to skip active_symbols the
+        logged-in broker doesn't actually offer (e.g. BTCUSD on a forex-only account)."""
+        if self._symbols is None or force:
+            try:
+                all_syms = mt5.symbols_get() or []
+                self._symbols = {s.name for s in all_syms if s.visible}
+            except Exception:
+                # keep whatever cache we have; empty-set on first failure
+                self._symbols = self._symbols or set()
+        return sorted(self._symbols)
+
+    def is_offered(self, symbol: str) -> bool:
+        """True if the broker offers `symbol`. Lazily fills the cache once."""
+        if self._symbols is None:
+            self.discover_symbols()
+        return symbol in (self._symbols or set())
 
     # --- data ---
     async def get_candles(self, symbol, timeframe, limit):
@@ -120,7 +149,16 @@ class MT5Provider(MarketProvider):
         positions = mt5.positions_get(symbol) if symbol else mt5.positions_get()
         return [{"ticket": p.ticket, "symbol": p.symbol,
                  "type": "BUY" if p.type == mt5.POSITION_TYPE_BUY else "SELL",
-                 "volume": p.volume, "entry": p.price_open} for p in (positions or [])]
+                 "volume": p.volume, "entry": p.price_open,
+                 "price_current": p.price_current,
+                 "profit": p.profit} for p in (positions or [])]   # profit = floating PnL (acct ccy)
+
+    async def account_summary(self) -> dict:
+        """Full live account snapshot for the dashboard heartbeat."""
+        info = mt5.account_info()
+        return {"login": info.login, "broker": getattr(info, "company", "") or "",
+                "balance": info.balance, "equity": info.equity,
+                "currency": info.currency}
 
     async def get_symbol_info(self, symbol: str) -> dict:
         """Live contract specs from MT5 — accurate per broker."""

@@ -1,9 +1,10 @@
 """MarketProvider — the seam between the bot and any market.
 
-The Soldier/Watcher/Sentinel call this interface; they never touch Binance or
-MT5 directly. `market_mode` swaps the concrete provider (crypto=Binance,
-forex=MT5). Live trading is position-based (open a long/short, hold ~h=24
-candles, close) — so the interface is position-oriented, not tick-contract.
+The Soldier/Watcher/Sentinel call this interface; they never touch MT5 directly.
+Single broker: the concrete provider is MT5Provider (forex, metals, crypto-CFD
+all via one logged-in MT5 account). Live trading is position-based (open a
+long/short, hold ~h=24 candles, close) — so the interface is position-oriented,
+not tick-contract.
 """
 from abc import ABC, abstractmethod
 

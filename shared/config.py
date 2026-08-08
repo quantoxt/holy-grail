@@ -1,8 +1,11 @@
 """Central config for the Holy Grail bot. Loads from the gitignored .env.
 
-The bot is now LIVE-mode: crypto (Binance) + forex/metals (MT5), swapped via
-`market_mode`. Pre-trained Kronos (zero-shot, no fine-tune) is the prediction
-engine; the validated edge is at h=24 on confident signals.
+Single broker: all instruments (forex, metals, crypto-CFD) trade through one
+logged-in MT5 account. `market_mode` is a vestigial label (still logged to DB
+columns) — provider selection no longer branches on it. Traded symbols come
+from RuntimeConfig.active_symbols (dashboard-adjustable), NOT from env.
+Pre-trained Kronos (zero-shot, no fine-tune) is the prediction engine; the
+validated edge is at h=24 on confident signals.
 """
 import os
 from dataclasses import dataclass, field
@@ -31,14 +34,8 @@ def _envi(key, default=0):
 @dataclass
 class Settings:
     # --- market routing ---
-    market_mode: str = field(default_factory=lambda: _env("MARKET_MODE", "crypto"))  # crypto | forex
-    crypto_symbols: list = field(default_factory=lambda: _env("CRYPTO_SYMBOLS", "BTCUSDT").split(","))
-    forex_symbols: list = field(default_factory=lambda: _env("FOREX_SYMBOLS", "XAUUSD,XAGUSD").split(","))
+    market_mode: str = field(default_factory=lambda: _env("MARKET_MODE", "forex"))  # vestigial label (logged to DB)
     timeframe: str = field(default_factory=lambda: _env("TIMEFRAME", "5m"))
-
-    @property
-    def symbols(self):
-        return self.crypto_symbols if self.market_mode == "crypto" else self.forex_symbols
 
     # --- Kronos (pre-trained, zero-shot) ---
     kronos_model: str = "NeoQuasar/Kronos-small"
@@ -55,9 +52,7 @@ class Settings:
     daily_loss_limit: float = field(default_factory=lambda: _envf("DAILY_LOSS_LIMIT", 0.05))   # 5%
     max_consecutive_losses: int = 5
 
-    # --- provider credentials ---
-    binance_api_key: str = field(default_factory=lambda: _env("BINANCE_API_KEY"))
-    binance_api_secret: str = field(default_factory=lambda: _env("BINANCE_API_SECRET"))
+    # --- provider credentials (MT5 only — single broker) ---
     mt5_login: int = field(default_factory=lambda: _envi("MT5_LOGIN"))
     mt5_password: str = field(default_factory=lambda: _env("MT5_PASSWORD"))
     mt5_server: str = field(default_factory=lambda: _env("MT5_SERVER"))

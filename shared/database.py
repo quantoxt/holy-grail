@@ -82,5 +82,19 @@ class DBLogger:
             "lot_before": lot_before, "lot_after": lot_after,
         }).execute()
 
+    # --- account state (live heartbeat — bot writes, dashboard reads) ---
+    def upsert_account_state(self, login, broker, balance, equity, currency,
+                             floating_pnl, open_positions, symbols):
+        """Upsert one row per MT5 login. Written by the bot's ~5s telemetry task;
+        read by GET /api/account for the dashboard."""
+        self.client.table("account_state").upsert({
+            "login": login, "broker": broker,
+            "balance": balance, "equity": equity, "currency": currency,
+            "floating_pnl": floating_pnl,
+            "open_positions": json.dumps(open_positions, default=str),
+            "symbols": json.dumps(symbols, default=str),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }, on_conflict="login").execute()
+
 
 db = DBLogger()

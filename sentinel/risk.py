@@ -19,8 +19,8 @@ from datetime import date, timedelta
 from shared.runtime_config import runtime
 
 
-# Default per-symbol contract specs (MT5/Binance). The provider's get_symbol_info
-# can override these with live values.
+# Default per-symbol contract specs (MT5). The provider's get_symbol_info
+# can override these with live broker values.
 SYMBOL_SPECS = {
     "XAUUSD":  {"contract_size": 100.0,  "volume_min": 0.01, "volume_step": 0.01},
     "XAGUSD":  {"contract_size": 5000.0, "volume_min": 0.01, "volume_step": 0.01},
