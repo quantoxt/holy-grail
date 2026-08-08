@@ -1,0 +1,54 @@
+# Secrets — NEVER commit
+.env
+.env.local
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+venv/
+.venv/
+env/
+
+# Kronos model weights (downloaded from HuggingFace at runtime — too large for git)
+*.pt
+*.bin
+*.safetensors
+*.ckpt
+model/Kronos/**/*.h5
+model/Kronos/**/*.onnx
+
+# Kronos repo internals (not needed)
+model/Kronos/.git/
+
+# Data (large, regenerable)
+data/
+*.parquet
+*.feather
+
+# Archive (dead code, not for git)
+_archive/
+
+# Build artifacts (regenerable)
+*_bundle/
+*_bundle.tar.gz
+*.tar.gz
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/pnpm-lock.yaml
+
+# Supabase internals
+supabase/.branches/
+supabase/.temp/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store

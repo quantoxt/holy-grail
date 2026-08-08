@@ -1,0 +1,21 @@
+# Holy Grail — Live Trading Bot dependencies
+# Install: uv pip install --python venv-torch/bin/python -r requirements.txt
+#
+# NOTE: torch is installed separately (CPU build):
+#   uv pip install --python venv-torch/bin/python torch --index-url https://download.pytorch.org/whl/cpu
+
+python-dotenv>=1.0
+ccxt>=4.0                  # BinanceProvider (crypto)
+fastapi>=0.115             # API backend
+uvicorn>=0.30              # ASGI server
+supabase>=2.0              # Database logging
+einops>=0.8                # Kronos model
+huggingface_hub>=0.25      # Model loading (Kronos)
+safetensors>=0.4           # Model weights
+pandas>=2.0                # Data processing
+numpy>=1.24                # Numerical
+tqdm>=4.60                 # Progress bars
+pyyaml>=6.0                # Config files
+
+# Windows-only (install on the MT5 host, NOT in WSL):
+# MetaTrader5>=5.0          # MT5Provider — forex/metals execution

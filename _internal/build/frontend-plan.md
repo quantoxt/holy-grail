@@ -1,8 +1,10 @@
 # Holy Grail — Frontend Build Plan
 
-**Date:** 2026-06-25  
+**Date:** 2026-06-25 · **Revised:** 2026-08-02 (Kronos-era architecture, Checkpoint 2)  
 **Stack:** Vue 3 (SPA) + Tailwind CSS 4 + shadcn-vue + FastAPI  
-**Served:** Vue static build from FastAPI, single process  
+**Served:** Vue static build from FastAPI, single process
+
+> **Note:** Originally written for the indicator-based design (EMA/RSI/BB + HMM regime). Revised to fit the Kronos-era architecture: regime and signals are now derived from Kronos **prediction outputs** (variance, rolling error, directional accuracy), not from technical indicators. The **infrastructure half is unchanged and reusable** — FastAPI/Vue/Tailwind/Pinia, the REST + WS contract, real-time throttle strategy, Docker multi-stage build. The indicator-specific dashboard bits are dropped here; they survive only as the documented fallback if Kronos fails on synthetics (see `blueprint/02-architecture.md`).  
 
 ---
 
@@ -10,21 +12,23 @@
 
 ```
 holy-grail/
-├── sidx/                    # Python bot (existing)
-│   ├── bot/                 # Soldier
-│   ├── research/            # Backtesting
-│   ├── monitor/             # Current basic dashboard (replace)
-│   └── api/                 # NEW — FastAPI backend
-│       ├── __init__.py
-│       ├── main.py          # FastAPI app, serves Vue static + REST + WS
-│       ├── routes/
-│       │   ├── status.py    # Bot status, regime, confidence
-│       │   ├── trades.py    # Trade history, open trades
-│       │   ├── regime.py    # Watcher data
-│       │   ├── risk.py      # Sentinel data
-│       │   └── control.py   # Start/stop/pause/config
-│       └── ws/
-│           └── handler.py   # WebSocket — push ticks, trades, regime changes
+├── kronos/                  # Kronos model code (from fork): model.py + finetune_csv/
+├── providers/               # Market Provider abstraction (DerivProvider now; Exchange future)
+├── soldier/                 # Layer 1 — Kronos inference + signal extraction + executor
+├── watcher/                 # Layer 2 — regime from prediction variance + error tracker
+├── sentinel/                # Layer 3 — risk, confidence scoring, lot scaling
+├── shared/                  # config.py, database.py, models.py, telegram.py
+├── api/                     # FastAPI backend — serves Vue static + REST + WS
+│   ├── __init__.py
+│   ├── main.py              # FastAPI app, serves Vue static + REST + WS
+│   ├── routes/
+│   │   ├── status.py        # Bot status, regime, confidence
+│   │   ├── trades.py        # Trade history, open trades
+│   │   ├── regime.py        # Watcher data (Kronos-derived)
+│   │   ├── risk.py          # Sentinel data
+│   │   └── control.py       # Start/stop/pause/config
+│   └── ws/
+│       └── handler.py       # WebSocket — push ticks, trades, regime changes
 │
 ├── frontend/                # Vue SPA (NEW)
 │   ├── src/
@@ -49,13 +53,13 @@ holy-grail/
 
 ```
 1. Develop:
-   - Terminal A: python -m sidx.bot.run_paper (bot running)
+   - Terminal A: python -m soldier.run (bot running, demo/paper mode)
    - Terminal B: cd frontend && pnpm dev (Vite dev server, proxies /api to FastAPI)
 
 2. Production build:
    - cd frontend && pnpm build  →  frontend/dist/
    - FastAPI serves dist/ as static files
-   - uvicorn sidx.api.main:app — single process
+   - uvicorn api.main:app — single process
 
 3. VPS deploy:
    - Docker container with Python + built Vue files
@@ -78,7 +82,7 @@ holy-grail/
 | `GET` | `/api/regime/history` | Regime history timeline |
 | `GET` | `/api/risk` | Sentinel state — lot multiplier, drawdown, kill switch |
 | `GET` | `/api/risk/events` | Risk events log (kill switches, scaling) |
-| `GET` | `/api/performance` | Per-signal-type stats, win rates |
+| `GET` | `/api/performance` | Per-regime / per-confidence-tier stats, win rates |
 | `GET` | `/api/config` | Current bot config (strategy + risk params) |
 | `PATCH` | `/api/config` | Update config (hot reload) |
 | `POST` | `/api/control/start` | Start bot |
@@ -92,10 +96,10 @@ holy-grail/
 |-------|---------|---------|
 | `tick` | `{ symbol, price, epoch }` | Every incoming tick |
 | `candle_close` | `{ symbol, timeframe, ohlc }` | On candle close |
-| `signal` | `{ direction, type, strength, indicators }` | New signal detected |
+| `signal` | `{ direction, type, strength, predicted_move, kronos_confidence }` | New signal detected |
 | `trade_open` | `{ trade_id, direction, entry, stake, confidence, regime }` | Trade executed |
 | `trade_close` | `{ trade_id, exit, profit, result, duration }` | Trade settled |
-| `regime_change` | `{ regime, confidence, features, model_version }` | Regime reclassified |
+| `regime_change` | `{ regime, confidence, prediction_variance, rolling_error, dir_accuracy, model_version }` | Regime reclassified |
 | `risk_event` | `{ type, reason, lot_before, lot_after }` | Sentinel action |
 | `bot_status` | `{ state, uptime, trades_today, daily_pnl }` | Periodic (every 5s) |
 
@@ -153,29 +157,29 @@ The command center. Everything at a glance.
 ┌─────────────────────┬─────────────────────┐
 │  CURRENT REGIME     │  SENTINEL STATE     │
 │  ● TRENDING         │  Confidence: 78%    │
-│  ADX: 32.1          │  Lot multiplier: 2x │
+│  Pred var: 0.21     │  Lot multiplier: 2x │
 │  2h 14m in regime   │  Drawdown: 3.2%     │
 └─────────────────────┴─────────────────────┘
 
 ┌─────────────────────────────────────────────┐
 │  LIVE PRICE CHART                            │
-│  [V75 candlestick chart with indicators      │
-│   overlay — EMA fast/slow, BB, RSI panel]    │
+│  [V75 candlestick chart with Kronos          │
+│   predicted-candle overlay — next N shaded]  │
 │  [Signal markers: ▲ BUY  ▼ SELL]             │
 │  [Regime background: green=trend, gray=chop] │
 └─────────────────────────────────────────────┘
 
 ┌─────────────────────┬─────────────────────┐
 │  OPEN TRADES        │  RECENT SIGNALS     │
-│  CALL V75  +$12.30  │  ▲ EMA Cross  0.91  │
-│  PUT V100 -$3.20    │  ▼ RSI Extreme 0.74 │
-│                     │  — BB Touch (filtered: choppy) │
+│  CALL V75  +$12.30  │  ▲ Kronos BUY  0.91 │
+│  PUT V100 -$3.20    │  ▼ Kronos SELL 0.74 │
+│                     │  — HOLD (filtered: choppy regime) │
 └─────────────────────┴─────────────────────┘
 ```
 
 **Components:**
 - `StatCard` — reusable metric card (label, value, delta, icon)
-- `PriceChart` — candlestick + indicator overlays (use lightweight-charts or chart.js)
+- `PriceChart` — candlestick + Kronos predicted-candle overlay (use lightweight-charts or chart.js)
 - `RegimeBadge` — colored pill showing current regime
 - `TradesList` — compact open trades table
 - `SignalFeed` — scrolling list of recent signals with filter reasons
@@ -206,7 +210,7 @@ Summary (below table):
 
 **Components:**
 - `TradesTable` — sortable, paginated, with regime + signal type columns
-- `TradeDetail` — expandable row showing full indicator snapshot at entry/exit
+- `TradeDetail` — expandable row showing full Kronos prediction context at entry/exit
 - `PerformanceSummary` — aggregate stats with filter context
 - `TradesChart` — P&L curve over time (cumulative)
 
@@ -219,15 +223,15 @@ Deep dive into what the AI sees.
 ```
 ┌─────────────────────────────────────────────────────────┐
 │  CURRENT REGIME: ● TRENDING (confidence: 87%)           │
-│  Model: hmm_v3 | In regime for 2h 14m                   │
+│  Model: kronos-small-v3-deriv-v75-m5 | In regime 2h 14m│
 ├─────────────────────────────────────────────────────────┤
-│  FEATURE VALUES                                         │
-│  ATR:           0.45    ████████░░  (high)              │
-│  ADX:          32.1    ██████████░  (strong trend)      │
-│  RSI variance:  12.3   ███░░░░░░░░  (low)               │
-│  Entropy:       0.72   ██████░░░░░  (moderate)          │
-│  BB width:     tight   ██░░░░░░░░░  (squeeze)           │
-│  Autocorr:     0.34    ███████░░░░  (significant)       │
+│  KRONOS PREDICTION METRICS                              │
+│  Prediction variance: 0.21  ██░░░░░░░░  (tight = good) │
+│  Rolling MAE:         0.34  ███░░░░░░░  (low error)     │
+│  Dir. accuracy (50):  61%   ██████░░░░  (above coinflip)│
+│  Predicted magnitude: 0.8%  █████░░░░░  (tradeable)     │
+│  Pred H-L spread:     tight ██░░░░░░░░  (low noise)     │
+│  Sample count:        3     (averaged forecast paths)   │
 ├─────────────────────────────────────────────────────────┤
 │  REGIME TIMELINE (last 24h)                             │
 │  [Horizontal bar chart:                                 │
@@ -243,7 +247,7 @@ Deep dive into what the AI sees.
 
 **Components:**
 - `RegimeGauge` — circular gauge showing confidence %
-- `FeatureBars` — horizontal bar chart of feature values vs percentile
+- `PredictionMetricBars` — horizontal bars: prediction variance, rolling MAE, directional accuracy, magnitude
 - `RegimeTimeline` — 24h horizontal strip showing regime transitions
 - `RegimeStats` — performance breakdown per regime
 
@@ -294,12 +298,13 @@ Bot configuration editor.
 
 ```
 ┌─────────────────────────────────────────────┐
-│  STRATEGY                                   │
-│  EMA Fast:      [20    ]                    │
-│  EMA Slow:      [50    ]                    │
-│  RSI Period:    [14    ]                    │
-│  RSI Buy Max:   [35.0  ]                    │
-│  RSI Sell Min:  [65.0  ]                    │
+│  SIGNAL (Kronos)                            │
+│  Model version: [kronos-small-v3-deriv-v75-m5]│
+│  Long threshold:  [+0.40 %]                 │
+│  Short threshold:[-0.40 %]                  │
+│  Predict length: [48    ] candles           │
+│  Lookback:       [512   ] candles           │
+│  Sample count:   [3     ]                   │
 │  ...                                        │
 ├─────────────────────────────────────────────┤
 │  RISK                                       │
@@ -404,7 +409,7 @@ Accent (semantic):
 | `TradesTable` | trades, filters | Trades |
 | `SignalFeed` | signals, max_items | Dashboard |
 | `RegimeTimeline` | history[] | Regime |
-| `FeatureBars` | features{} | Regime |
+| `PredictionMetricBars` | metrics{} | Regime |
 | `EventLog` | events[], types[] | Risk |
 | `PnLChart` | data[], period | Dashboard, trades, risk |
 | `ConfigForm` | sections, values | Config |
@@ -446,7 +451,7 @@ export function useBotWebSocket() {
 stores/
 ├── bot.ts          # status, mode, uptime, config
 ├── trades.ts       # open trades, trade history, pagination
-├── regime.ts       # current regime, history, features
+├── regime.ts       # current regime, history, prediction metrics
 ├── risk.ts         # sentinel state, drawdown, lot multiplier, events
 ├── market.ts       # live ticks, candles, current price
 └── notifications.ts # toast queue
@@ -479,7 +484,7 @@ stores/
 
 ### Phase F4: Regime View (Day 6)
 - Current regime gauge
-- Feature bars
+- Prediction metric bars
 - Regime timeline
 - Regime stats breakdown
 
@@ -506,10 +511,10 @@ stores/
 
 ---
 
-## FastAPI Backend (sidx/api/)
+## FastAPI Backend (api/)
 
 ```
-sidx/api/
+api/
 ├── __init__.py
 ├── main.py              # FastAPI app + static serving + WS endpoint
 ├── deps.py              # Dependency injection (bot instance, db)
@@ -589,9 +594,9 @@ FROM python:3.12-slim
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
-COPY sidx/ ./sidx/
+COPY api/ soldier/ watcher/ sentinel/ shared/ providers/ kronos/ ./
 COPY --from=frontend /app/frontend/dist ./frontend/dist
-CMD ["uvicorn", "sidx.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
 One container. One port. Done.
