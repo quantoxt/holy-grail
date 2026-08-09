@@ -13,6 +13,7 @@ contract size (e.g. 100 oz gold, 100k base forex).
 import MetaTrader5 as mt5  # noqa: E402  (Windows/Wine + terminal required)
 import pandas as pd
 import threading
+import time
 
 from providers.base import MarketProvider
 from shared.mt5_accounts import get_account, fetch_active_account
@@ -57,16 +58,32 @@ class MT5Provider(MarketProvider):
             return box["ok"]
         return False   # timed out — worker is abandoned (daemon); we proceed
 
+    def _account_info(self, tries: int = 15, delay: float = 1.0):
+        """account_info() returns None right after initialize/while the terminal is
+        switching accounts (logging in takes a few seconds). Retry briefly. Returns
+        None if the account still isn't up — callers must tolerate that (never crash)."""
+        for _ in range(tries):
+            try:
+                info = mt5.account_info()
+            except Exception:
+                info = None
+            if info is not None:
+                return info
+            time.sleep(delay)
+        return None
+
     def _connect(self, account: str | None = None):
         """Connect MT5. ALWAYS binds the running terminal first (fast + safe, can't
         wedge startup), then — if a DIFFERENT account is active in Supabase and not
         known-bad — attempts a timed swap to it. A bad/unreachable account times out
-        and the bot stays on the terminal instead of hanging or crashing."""
+        and the bot stays on the terminal instead of hanging or crashing. Tolerates
+        account_info() returning None (terminal mid-login/switch)."""
         # 1) terminal bind first — guarantees a working connection
         if not self._init_timed({}, timeout=30):
             raise RuntimeError("MT5 terminal bind failed (IPC timeout) — the terminal "
                                "needs restarting")
-        self._login = mt5.account_info().login
+        info = self._account_info()
+        self._login = info.login if info else None
         self.account_name = account or "terminal"
         # 2) timed swap to the configured active account, if different & not known-bad
         acct = get_account(account)
@@ -80,9 +97,11 @@ class MT5Provider(MarketProvider):
             return
         if self._init_timed({"login": desired, "password": acct["password"],
                              "server": acct["server"]}, timeout=40):
-            self._login = mt5.account_info().login
-            self.account_name = acct.get("name") or "active"
-            self._failed_login = None
+            info = self._account_info()
+            if info:
+                self._login = info.login
+                self.account_name = acct.get("name") or "active"
+                self._failed_login = None
         else:
             print(f"[MT5] swap to {desired} ({acct.get('server')}) failed/timed out — "
                   f"staying on terminal login {self._login}", flush=True)
@@ -210,8 +229,11 @@ class MT5Provider(MarketProvider):
                  "profit": p.profit} for p in (positions or [])]   # profit = floating PnL (acct ccy)
 
     async def account_summary(self) -> dict:
-        """Full live account snapshot for the dashboard heartbeat."""
-        info = mt5.account_info()
+        """Full live account snapshot for the dashboard heartbeat. Raises if the
+        terminal has no active account (e.g. mid-switch) — telemetry catches it."""
+        info = self._account_info()
+        if info is None:
+            raise RuntimeError("no active MT5 account (terminal not logged in)")
         return {"login": info.login, "broker": getattr(info, "company", "") or "",
                 "balance": info.balance, "equity": info.equity,
                 "currency": info.currency}
