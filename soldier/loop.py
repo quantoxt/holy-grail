@@ -309,6 +309,17 @@ class Trader:
 
 
 def main():
+    # Under pythonw (the scheduled-task launcher) there is no console, so stdout/stderr
+    # are None and prints would be lost. Mirror them to the log files so debugging works
+    # with no visible window. (When launched via the .bat redirect, these are already set.)
+    try:
+        if sys.stdout is None:
+            sys.stdout = open(ROOT / "data" / "bot.log", "a", buffering=1)
+        if sys.stderr is None:
+            sys.stderr = open(ROOT / "data" / "bot.err", "a", buffering=1)
+    except Exception:
+        pass
+
     p = argparse.ArgumentParser()
     p.add_argument("--cycles", type=int, default=None)
     p.add_argument("--interval", type=int, default=300)
@@ -316,7 +327,7 @@ def main():
     args = p.parse_args()
     trader = Trader(account=args.account)
     print(f"Holy Grail | LIVE | symbols={runtime.active_symbols} "
-          f"tf={settings.timeframe} goal=${runtime.weekly_goal}")
+          f"tf={settings.timeframe} goal=${runtime.weekly_goal}", flush=True)
     asyncio.run(trader.run(cycles=args.cycles, interval_sec=args.interval))
 if __name__ == "__main__":
     main()

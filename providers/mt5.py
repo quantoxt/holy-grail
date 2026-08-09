@@ -12,6 +12,7 @@ contract size (e.g. 100 oz gold, 100k base forex).
 """
 import MetaTrader5 as mt5  # noqa: E402  (Windows/Wine + terminal required)
 import pandas as pd
+import threading
 
 from providers.base import MarketProvider
 from shared.mt5_accounts import get_account, fetch_active_account
@@ -26,40 +27,83 @@ class MT5Provider(MarketProvider):
     name = "mt5"
 
     def __init__(self, account: str | None = None):
+        self._symbols: set[str] | None = None   # broker-discovered symbol cache
+        self._failed_login: int | None = None   # login we tried & failed — don't hammer it
         self._connect(account)
         self._watched_account = self.account_name
-        self._symbols: set[str] | None = None   # broker-discovered symbol cache
+
+    def _init_timed(self, creds: dict, timeout: float = 40.0) -> bool:
+        """mt5.initialize() is a BLOCKING C call that can hang for minutes on an
+        unreachable server (and wedge the terminal). Run shutdown+initialize on a
+        worker thread with a hard timeout so a bad account can't freeze the bot."""
+        done = threading.Event()
+        box = {"ok": False}
+
+        def go():
+            try:
+                mt5.shutdown()
+            except Exception:
+                pass
+            try:
+                box["ok"] = bool(mt5.initialize(**creds))
+            except Exception:
+                box["ok"] = False
+            finally:
+                done.set()
+
+        t = threading.Thread(target=go, daemon=True)
+        t.start()
+        if done.wait(timeout):
+            return box["ok"]
+        return False   # timed out — worker is abandoned (daemon); we proceed
 
     def _connect(self, account: str | None = None):
-        """Initialize or re-initialize MT5. Logs in with the active account from
-        Supabase (source of truth). If none is configured (or Supabase is down),
-        binds the already-running terminal session (mt5.initialize() with no args
-        reuses it) so the bot keeps running through a blip."""
-        try:
-            mt5.shutdown()
-        except Exception:
-            pass
-        creds = {}
-        acct = get_account(account)
-        if acct and acct.get("login") and acct.get("password") and acct.get("server"):
-            creds = {"login": int(acct["login"]), "password": acct["password"], "server": acct["server"]}
-            self.account_name = acct.get("name") or account or "active"
-        else:
-            self.account_name = account or "terminal"
-        if not mt5.initialize(**creds):
-            raise RuntimeError(f"MT5 initialize failed: {mt5.last_error}")
+        """Connect MT5. ALWAYS binds the running terminal first (fast + safe, can't
+        wedge startup), then — if a DIFFERENT account is active in Supabase and not
+        known-bad — attempts a timed swap to it. A bad/unreachable account times out
+        and the bot stays on the terminal instead of hanging or crashing."""
+        # 1) terminal bind first — guarantees a working connection
+        if not self._init_timed({}, timeout=30):
+            raise RuntimeError("MT5 terminal bind failed (IPC timeout) — the terminal "
+                               "needs restarting")
         self._login = mt5.account_info().login
+        self.account_name = account or "terminal"
+        # 2) timed swap to the configured active account, if different & not known-bad
+        acct = get_account(account)
+        if not (acct and acct.get("login") and acct.get("password") and acct.get("server")):
+            return
+        try:
+            desired = int(acct["login"])
+        except Exception:
+            return
+        if desired == self._login or desired == self._failed_login:
+            return
+        if self._init_timed({"login": desired, "password": acct["password"],
+                             "server": acct["server"]}, timeout=40):
+            self._login = mt5.account_info().login
+            self.account_name = acct.get("name") or "active"
+            self._failed_login = None
+        else:
+            print(f"[MT5] swap to {desired} ({acct.get('server')}) failed/timed out — "
+                  f"staying on terminal login {self._login}", flush=True)
+            self._failed_login = desired
 
     def check_account_switch(self) -> bool:
-        """True if the Supabase active account differs from the one we're logged
-        into. Never raises — a Supabase blip returns False (no swap on a hiccup)."""
+        """True if the Supabase active account differs from the one we're on AND
+        isn't a login we already failed to initialize (so we don't retry a known-
+        bad account every 5s). Never raises."""
         desired = fetch_active_account()
         if not desired:
             return False
         try:
-            return int(desired["login"]) != self._login
+            desired_login = int(desired["login"])
         except Exception:
             return False
+        if desired_login == self._login:
+            return False
+        if self._failed_login is not None and desired_login == self._failed_login:
+            return False
+        return True
 
     def reconnect(self):
         """Hot-swap to the currently active account."""
