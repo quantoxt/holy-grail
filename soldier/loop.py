@@ -54,21 +54,9 @@ class Trader:
             return 50.0
 
     async def run_cycle(self):
-        """One time step: resolve old → scan all → rank → open best."""
+        """One time step: resolve old → scan all → rank → open best.
+        (Account hot-swap is handled in the 5s telemetry task, not here.)"""
         self.candle_idx += 1
-
-        # Check for MT5 account switch (hot-swap from dashboard)
-        if hasattr(self.provider, 'check_account_switch') and self.provider.check_account_switch():
-            self.log(type="SWITCH", msg=f"MT5 account changed — reconnecting")
-            try:
-                self.provider.reconnect()
-                self.log(type="SWITCH", msg=f"reconnected to {self.provider.account_name}")
-                try:
-                    await send_telegram(f"🔄 MT5 account switched to {self.provider.account_name}")
-                except Exception:
-                    pass
-            except Exception as e:
-                self.log(type="ERROR", msg=f"reconnect failed: {e}")
 
         # Phase 1: Resolve matured positions
         await self._resolve_positions()
@@ -248,9 +236,9 @@ class Trader:
 
     async def _telemetry(self):
         """Near-realtime account heartbeat, independent of the (slow) trade cycle.
-        Every ~5s: pull latest dashboard config (hot-reload), then publish live
-        balance / equity / floating PnL / open positions / broker symbols to the
-        account_state row the dashboard reads. Discovery refresh is throttled."""
+        Every ~5s: pull latest dashboard config (hot-reload), check for an MT5
+        account switch (Supabase is the source of truth), then publish live
+        balance / equity / floating PnL / positions / symbols / news blackout."""
         sym_refresh_every = 6   # refresh broker symbol list every 6th tick (~30s)
         tick = 0
         while True:
@@ -258,15 +246,43 @@ class Trader:
                 await asyncio.sleep(5)
                 tick += 1
                 runtime.refresh()                                   # hot-reload dashboard edits
+                await self._maybe_switch_account()                  # dashboard-driven swap
                 acct = await self.provider.account_summary()
                 positions = await self.provider.get_open_positions()
                 floating = round(sum(p.get("profit", 0) for p in positions), 2)
                 syms = self.provider.discover_symbols(force=(tick % sym_refresh_every == 0))
+                # news blackout — published so the dashboard can show a banner
+                blackout, reason = (False, "")
+                try:
+                    from shared.news import is_blackout
+                    blackout, reason = is_blackout(runtime.active_symbols,
+                                                   runtime.news_blackout_pre_min,
+                                                   runtime.news_blackout_post_min)
+                except Exception:
+                    pass
                 db.upsert_account_state(
                     acct["login"], acct["broker"], acct["balance"], acct["equity"],
-                    acct["currency"], floating, positions, syms)
+                    acct["currency"], floating, positions, syms,
+                    news_blackout=blackout, news_reason=reason)
             except Exception as e:
                 self.log(type="TELEMETRY_ERR", msg=str(e))
+
+    async def _maybe_switch_account(self):
+        """If the dashboard changed the active MT5 account (Supabase mt5_accounts),
+        hot-swap the terminal connection. No-op when nothing changed or Supabase
+        is unreachable (never swap on a blip)."""
+        if not (hasattr(self.provider, "check_account_switch")
+                and self.provider.check_account_switch()):
+            return
+        try:
+            self.provider.reconnect()
+            self.log(type="SWITCH", msg=f"switched to {self.provider.account_name}")
+            try:
+                await send_telegram(f"🔄 MT5 account switched to {self.provider.account_name}")
+            except Exception:
+                pass
+        except Exception as e:
+            self.log(type="ERROR", msg=f"account switch failed: {e}")
 
     async def run(self, cycles=None, interval_sec=300):
         runtime.refresh()   # boot from the dashboard's last-saved config, not code defaults
