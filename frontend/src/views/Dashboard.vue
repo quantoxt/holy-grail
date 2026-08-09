@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
+import { supabase } from '../lib/supabase'
 
 const perf = ref({ total_trades: 0, closed: 0, wins: 0, win_rate: 0, net_pnl: 0 })
 const signals = ref<any[]>([])
@@ -9,13 +10,26 @@ let timer: number
 
 const fetchData = async () => {
   try {
-    const [p, s, t, a] = await Promise.all([
-      fetch('/api/performance').then(r => r.json()),
-      fetch('/api/signals?limit=10').then(r => r.json()),
-      fetch('/api/trades?limit=10').then(r => r.json()),
-      fetch('/api/account').then(r => r.json()),
+    const [{ data: acctRow }, { data: sigRows }, { data: tradeRows }] = await Promise.all([
+      // latest account heartbeat (the bot writes one row per login; newest = active)
+      supabase.from('account_state').select('*').order('updated_at', { ascending: false }).limit(1),
+      supabase.from('signals').select('*').order('signal_time', { ascending: false }).limit(10),
+      supabase.from('trades').select('*').order('created_at', { ascending: false }).limit(500),
     ])
-    perf.value = p; signals.value = s; trades.value = t; account.value = a || {}
+    account.value = (acctRow && acctRow[0]) || {}
+    signals.value = sigRows || []
+    const all = tradeRows || []
+    trades.value = all.slice(0, 10)
+    // performance — computed client-side from the trades audit table
+    const closed = all.filter((t) => t.result === 'win' || t.result === 'loss')
+    const wins = closed.filter((t) => t.result === 'win').length
+    perf.value = {
+      total_trades: all.length,
+      closed: closed.length,
+      wins,
+      win_rate: closed.length ? wins / closed.length : 0,
+      net_pnl: all.reduce((s, t) => s + (Number(t.pnl) || 0), 0),
+    }
   } catch {}
 }
 onMounted(() => { fetchData(); timer = setInterval(fetchData, 5000) })

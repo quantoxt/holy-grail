@@ -30,16 +30,27 @@ class MT5Provider(MarketProvider):
         self._symbols: set[str] | None = None   # broker-discovered symbol cache
 
     def _connect(self, account: str | None = None):
-        """Initialize or re-initialize MT5 with the given account."""
+        """Initialize or re-initialize MT5 with the given account.
+
+        If credentials are configured in data/mt5_accounts.json, logs in with
+        them. Otherwise binds to the already-running, logged-in terminal
+        (mt5.initialize() with no args reuses the terminal's session) — handy for
+        a demo with an open terminal. Persist creds via the dashboard for
+        auto-login across terminal restarts."""
         try:
             mt5.shutdown()
         except Exception:
             pass
-        acct = get_account(account)
-        if not mt5.initialize(login=acct["login"], password=acct["password"], server=acct["server"]):
+        creds = {}
+        try:
+            acct = get_account(account)
+            creds = {"login": acct["login"], "password": acct["password"], "server": acct["server"]}
+            self.account_name = account or "active"
+        except Exception:
+            self.account_name = account or "terminal"
+        if not mt5.initialize(**creds):
             raise RuntimeError(f"MT5 initialize failed: {mt5.last_error}")
-        self.account_name = account or "active"
-        self._login = acct["login"]
+        self._login = mt5.account_info().login
 
     def check_account_switch(self) -> bool:
         """Returns True if the active account changed (caller should reconnect)."""
