@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { supabase, patchConfig } from '../lib/supabase'
 
 const config = ref<any>({})
-const weekly = ref<any>({})
+const weekly = ref<any>({ weekly_pnl: 0, weekly_goal: 14, weekly_progress_pct: 0, daily_pnl: 0, total_trades: 0, win_rate: 0, consecutive_losses: 0 })
 const accounts = ref<any[]>([])
 const botState = ref('running')
-const news = ref<any>({})
+const news = ref<any>({})  // blackout banner — populated when the bot publishes it; {} = hidden
 const saving = ref(false)
 const calibrating = ref(false)
 const showAddAccount = ref(false)
@@ -21,80 +22,99 @@ const applyingSymbols = ref(false)
 
 const fetchConfig = async () => {
   try {
-    const c = await fetch('/api/config').then(r => r.json())
+    const { data } = await supabase.from('bot_config').select('config').eq('id', 1).limit(1).single()
+    const c = (data?.config || {}) as Record<string, any>
     config.value = c
+    if (!symbolsDirty.value) activeBuffer.value = [...(c.active_symbols || [])]
     botState.value = c.trading_paused ? 'paused' : (c.bot_running ? 'running' : 'stopped')
   } catch {}
 }
 
-// Live dashboard stats only — does NOT touch the editable form fields,
-// so polling never wipes unsaved edits in the config inputs.
+// Live stats only — does NOT touch the editable form fields, so polling never
+// wipes unsaved edits. Reads accounts, the bot heartbeat (discovered symbols),
+// and computes weekly/performance client-side from the trades audit table.
 const fetchLive = async () => {
   try {
-    const [w, n, a, s] = await Promise.all([
-      fetch('/api/weekly').then(r => r.json()),
-      fetch('/api/news').then(r => r.json()),
-      fetch('/api/accounts').then(r => r.json()),
-      fetch('/api/symbols').then(r => r.json()),
+    const [{ data: acct }, { data: accts }, { data: trs }] = await Promise.all([
+      supabase.from('account_state').select('symbols').order('updated_at', { ascending: false }).limit(1),
+      supabase.from('mt5_accounts').select('*').order('created_at', { ascending: false }),
+      supabase.from('trades').select('result,pnl,exit_time').order('created_at', { ascending: false }).limit(500),
     ])
-    weekly.value = w
-    news.value = n
-    accounts.value = a
-    discovered.value = s.discovered || []
-    // Sync the working set from the server ONLY when the user isn't mid-edit,
-    // otherwise polling would clobber in-progress checkbox toggles.
-    if (!symbolsDirty.value) activeBuffer.value = [...(s.active || [])]
+    discovered.value = ((acct && acct[0]?.symbols) || []) as string[]
+    accounts.value = accts || []
+    weekly.value = computeWeekly(trs || [], Number(config.value.weekly_goal) || 14)
   } catch {}
+}
+
+// Weekly goal progress + performance, computed client-side (Monday-start week).
+const computeWeekly = (rows: any[], goal: number) => {
+  const closed = rows.filter((t) => t.result === 'win' || t.result === 'loss')
+  const now = new Date()
+  const weekStart = new Date(now); weekStart.setHours(0, 0, 0, 0); weekStart.setDate(now.getDate() - ((now.getDay() + 6) % 7))
+  const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0)
+  const inWeek = (t: any) => t.exit_time && new Date(t.exit_time) >= weekStart
+  const inDay = (t: any) => t.exit_time && new Date(t.exit_time) >= dayStart
+  const weeklyPnl = closed.filter(inWeek).reduce((s, t) => s + (Number(t.pnl) || 0), 0)
+  const wins = closed.filter((t) => t.result === 'win').length
+  // trailing losing streak from most recent closed
+  const byTime = [...closed].sort((a, b) => new Date(b.exit_time).getTime() - new Date(a.exit_time).getTime())
+  let streak = 0
+  for (const t of byTime) { if (t.result === 'loss') streak++; else break }
+  return {
+    weekly_pnl: weeklyPnl,
+    weekly_goal: goal,
+    weekly_progress_pct: goal > 0 ? (weeklyPnl / goal) * 100 : 0,
+    daily_pnl: closed.filter(inDay).reduce((s, t) => s + (Number(t.pnl) || 0), 0),
+    total_trades: closed.length,
+    win_rate: closed.length ? wins / closed.length : 0,
+    consecutive_losses: streak,
+  }
 }
 
 const save = async () => {
   saving.value = true
   try {
-    await fetch('/api/config', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        weekly_goal: Number(config.value.weekly_goal),
-        baseline_equity: Number(config.value.baseline_equity),
-        max_risk_per_trade: Number(config.value.max_risk_per_trade),
-        max_daily_loss: Number(config.value.max_daily_loss),
-        max_weekly_drawdown: Number(config.value.max_weekly_drawdown),
-        max_open_positions: Number(config.value.max_open_positions),
-        sl_multiplier: Number(config.value.sl_multiplier),
-        thursday_aggression: config.value.thursday_aggression,
-        active_symbols: config.value.active_symbols,
-      }),
+    const merged = await patchConfig({
+      weekly_goal: Number(config.value.weekly_goal),
+      baseline_equity: Number(config.value.baseline_equity),
+      max_risk_per_trade: Number(config.value.max_risk_per_trade),
+      max_daily_loss: Number(config.value.max_daily_loss),
+      max_weekly_drawdown: Number(config.value.max_weekly_drawdown),
+      max_open_positions: Number(config.value.max_open_positions),
+      sl_multiplier: Number(config.value.sl_multiplier),
+      thursday_aggression: config.value.thursday_aggression,
+      active_symbols: config.value.active_symbols,
     })
-  } finally { saving.value = false; await fetchConfig() }
+    config.value = merged
+  } catch (e) { console.error(e); alert('Save failed — check Supabase connection.') }
+  finally { saving.value = false }
 }
 
 const calibrate = async () => {
   calibrating.value = true
   try {
-    const res = await fetch('/api/calibrate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        balance: Number(config.value.baseline_equity),
-        weekly_goal: Number(config.value.weekly_goal),
-      }),
-    })
-    if (!res.ok) throw new Error(`API ${res.status}`)
-    const data = await res.json()
-    if (data.config) {
-      // directly update from API response — the derived risk params
-      config.value = { ...config.value, ...data.config }
+    // Mirrors RuntimeConfig.auto_calibrate: derive risk params from balance + goal.
+    const balance = Number(config.value.baseline_equity) || 0
+    const goal = Number(config.value.weekly_goal) || 0
+    const risk = Math.round(balance * 0.02 * 100) / 100
+    const derived = {
+      max_risk_per_trade: risk,
+      max_daily_loss: Math.round(balance * 0.06 * 100) / 100,
+      max_weekly_drawdown: Math.round(balance * 0.20 * 100) / 100,
+      max_open_positions: Math.min(5, Math.max(1, Math.floor(goal / (risk * 2)))),
     }
-  } catch (e) {
-    console.error('calibrate failed:', e)
-    alert('Calibrate failed — is the API running on :8000?')
-  } finally { calibrating.value = false }
+    const merged = await patchConfig(derived)
+    config.value = merged
+  } catch (e) { console.error(e); alert('Calibrate failed — check Supabase connection.') }
+  finally { calibrating.value = false }
 }
 
 const control = async (action: string) => {
-  await fetch(`/api/control/${action}`, { method: 'POST' })
-  // Update state locally — don't refetch config (would clobber in-progress edits).
-  botState.value = action === 'start' ? 'running' : action === 'pause' ? 'paused' : 'stopped'
+  const patch = action === 'start' ? { bot_running: true, trading_paused: false }
+    : action === 'stop' ? { bot_running: false }
+    : action === 'pause' ? { trading_paused: true }
+    : {}
+  try { await patchConfig(patch); await fetchConfig() } catch (e) { console.error(e) }
 }
 
 // --- symbol selection ---
@@ -105,53 +125,47 @@ const toggleSymbol = (sym: string) => {
     ? activeBuffer.value.filter(s => s !== sym)
     : [...activeBuffer.value, sym]
 }
-// symbols that are active but NOT offered by the broker (shown with a warning)
 const missingActive = computed(() =>
   activeBuffer.value.filter(s => discovered.value.length && !discovered.value.includes(s)))
 const filteredDiscovered = computed(() => {
   const q = symbolSearch.value.trim().toUpperCase()
   const list = q ? discovered.value.filter(s => s.includes(q)) : discovered.value
-  // active first, then the rest
   return [...list].sort((a, b) => Number(isActive(b)) - Number(isActive(a)))
 })
 const applySymbols = async () => {
   applyingSymbols.value = true
   try {
-    await fetch('/api/config', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ active_symbols: activeBuffer.value }),
-    })
-    config.value.active_symbols = [...activeBuffer.value]
-    symbolsDirty.value = false   // re-sync from server on next poll
-  } finally { applyingSymbols.value = false }
+    const merged = await patchConfig({ active_symbols: activeBuffer.value })
+    config.value = merged
+    symbolsDirty.value = false
+  } catch (e) { console.error(e); alert('Apply failed — check Supabase connection.') }
+  finally { applyingSymbols.value = false }
 }
 
 const addAccount = async () => {
-  await fetch('/api/accounts', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(newAccount.value),
-  })
+  try { await supabase.from('mt5_accounts').insert(newAccount.value) } catch (e) { console.error(e) }
   newAccount.value = { name: '', login: 0, password: '', server: '', broker: '' }
   showAddAccount.value = false
   await fetchLive()
 }
 
 const activateAccount = async (id: number) => {
-  await fetch(`/api/accounts/${id}/activate`, { method: 'POST' })
+  try {
+    await supabase.from('mt5_accounts').update({ is_active: false }).neq('id', id)
+    await supabase.from('mt5_accounts').update({ is_active: true }).eq('id', id)
+  } catch (e) { console.error(e) }
   await fetchLive()
 }
 
 const deleteAccount = async (id: number) => {
-  await fetch(`/api/accounts/${id}`, { method: 'DELETE' })
+  try { await supabase.from('mt5_accounts').delete().eq('id', id) } catch (e) { console.error(e) }
   await fetchLive()
 }
 
 onMounted(() => {
-  fetchConfig()           // load the form once
-  fetchLive()             // load live stats once
-  timer = setInterval(fetchLive, 5000)   // poll ONLY live stats, not the form
+  fetchConfig()
+  fetchLive()
+  timer = setInterval(fetchLive, 5000)
 })
 onUnmounted(() => clearInterval(timer))
 

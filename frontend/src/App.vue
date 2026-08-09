@@ -4,6 +4,7 @@ import Dashboard from './views/Dashboard.vue'
 import Trades from './views/Trades.vue'
 import Risk from './views/Risk.vue'
 import Config from './views/Config.vue'
+import { supabase } from './lib/supabase'
 
 const status = ref<any>({})
 const view = ref('dashboard')
@@ -17,7 +18,15 @@ const navItems = [
 ]
 
 const fetchStatus = async () => {
-  try { status.value = await (await fetch('/api/status')).json() } catch {}
+  try {
+    const { data } = await supabase.from('bot_config').select('config').eq('id', 1).limit(1).single()
+    const cfg = (data?.config || {}) as Record<string, any>
+    status.value = {
+      symbols: cfg.active_symbols || [],
+      running: cfg.bot_running,
+      paused: cfg.trading_paused,
+    }
+  } catch {}
 }
 onMounted(() => { fetchStatus(); timer = setInterval(fetchStatus, 5000) })
 onUnmounted(() => clearInterval(timer))
@@ -34,8 +43,10 @@ onUnmounted(() => clearInterval(timer))
         {{ item.label }}
       </button>
       <div class="mt-auto text-xs text-(--muted)">
-        <div>{{ status.market_mode ?? '...' }} · {{ (status.symbols ?? []).join(', ') }}</div>
-        <div class="text-(--profit) font-medium">● LIVE</div>
+        <div>{{ (status.symbols ?? []).join(', ') || '...' }}</div>
+        <div v-if="status.paused" class="text-(--warning) font-medium">● PAUSED</div>
+        <div v-else-if="status.running" class="text-(--profit) font-medium">● LIVE</div>
+        <div v-else class="text-(--loss) font-medium">● STOPPED</div>
       </div>
     </aside>
     <main class="flex-1 p-6 overflow-auto">

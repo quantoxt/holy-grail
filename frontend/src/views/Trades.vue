@@ -1,10 +1,15 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
+import { supabase } from '../lib/supabase'
 
 const trades = ref<any[]>([])
 let timer: number
 const fetchTrades = async () => {
-  try { trades.value = await (await fetch('/api/trades?limit=50')).json() } catch {}
+  try {
+    const { data } = await supabase.from('trades')
+      .select('*').order('created_at', { ascending: false }).limit(50)
+    trades.value = data || []
+  } catch {}
 }
 onMounted(() => { fetchTrades(); timer = setInterval(fetchTrades, 5000) })
 onUnmounted(() => clearInterval(timer))

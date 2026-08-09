@@ -1,10 +1,15 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
+import { supabase } from '../lib/supabase'
 
 const events = ref<any[]>([])
 let timer: number
 const fetchRisk = async () => {
-  try { events.value = await (await fetch('/api/risk?limit=30')).json() } catch {}
+  try {
+    const { data } = await supabase.from('risk_events')
+      .select('*').order('created_at', { ascending: false }).limit(30)
+    events.value = data || []
+  } catch {}
 }
 onMounted(() => { fetchRisk(); timer = setInterval(fetchRisk, 5000) })
 onUnmounted(() => clearInterval(timer))
