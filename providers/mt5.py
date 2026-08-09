@@ -1,10 +1,11 @@
-"""MT5Provider — forex/metals (XAUUSD, XAGUSD, forex) via MetaTrader5.
+"""MT5Provider — forex/metals/crypto-CFD via MetaTrader5 (single broker).
 
 Implements MarketProvider. REQUIRES the MetaTrader5 terminal running (Windows
-native, or Wine on Linux) + the `MetaTrader5` Python package — so it CANNOT be
-imported/tested on a plain Linux box. Deploy on the Windows VPS where the
-terminal runs. Connects to the active account in data/mt5_accounts.json (or a
-named account via `account=`); multi-account + switchable.
+native) + the `MetaTrader5` Python package — so it CANNOT be imported/tested on a
+plain Linux box. Deploy on the Windows VPS where the terminal runs. The active
+account comes from Supabase `mt5_accounts` (is_active=true) — the single source of
+truth, swappable live from the dashboard. If none is configured, it binds the
+already-running terminal session.
 
 Size is USDT/USD notional at the interface; converted to LOTS per the symbol's
 contract size (e.g. 100 oz gold, 100k base forex).
@@ -13,7 +14,7 @@ import MetaTrader5 as mt5  # noqa: E402  (Windows/Wine + terminal required)
 import pandas as pd
 
 from providers.base import MarketProvider
-from shared.mt5_accounts import get_account
+from shared.mt5_accounts import get_account, fetch_active_account
 
 _TF = {
     "1m": mt5.TIMEFRAME_M1, "5m": mt5.TIMEFRAME_M5, "15m": mt5.TIMEFRAME_M15,
@@ -30,33 +31,33 @@ class MT5Provider(MarketProvider):
         self._symbols: set[str] | None = None   # broker-discovered symbol cache
 
     def _connect(self, account: str | None = None):
-        """Initialize or re-initialize MT5 with the given account.
-
-        If credentials are configured in data/mt5_accounts.json, logs in with
-        them. Otherwise binds to the already-running, logged-in terminal
-        (mt5.initialize() with no args reuses the terminal's session) — handy for
-        a demo with an open terminal. Persist creds via the dashboard for
-        auto-login across terminal restarts."""
+        """Initialize or re-initialize MT5. Logs in with the active account from
+        Supabase (source of truth). If none is configured (or Supabase is down),
+        binds the already-running terminal session (mt5.initialize() with no args
+        reuses it) so the bot keeps running through a blip."""
         try:
             mt5.shutdown()
         except Exception:
             pass
         creds = {}
-        try:
-            acct = get_account(account)
-            creds = {"login": acct["login"], "password": acct["password"], "server": acct["server"]}
-            self.account_name = account or "active"
-        except Exception:
+        acct = get_account(account)
+        if acct and acct.get("login") and acct.get("password") and acct.get("server"):
+            creds = {"login": int(acct["login"]), "password": acct["password"], "server": acct["server"]}
+            self.account_name = acct.get("name") or account or "active"
+        else:
             self.account_name = account or "terminal"
         if not mt5.initialize(**creds):
             raise RuntimeError(f"MT5 initialize failed: {mt5.last_error}")
         self._login = mt5.account_info().login
 
     def check_account_switch(self) -> bool:
-        """Returns True if the active account changed (caller should reconnect)."""
+        """True if the Supabase active account differs from the one we're logged
+        into. Never raises — a Supabase blip returns False (no swap on a hiccup)."""
+        desired = fetch_active_account()
+        if not desired:
+            return False
         try:
-            current = get_account(None)  # reads the active account
-            return current.get("login") != self._login
+            return int(desired["login"]) != self._login
         except Exception:
             return False
 

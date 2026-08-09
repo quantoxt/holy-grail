@@ -17,7 +17,6 @@ let timer: number
 const discovered = ref<string[]>([])        // symbols the logged-in broker offers
 const activeBuffer = ref<string[]>([])      // working set the user is toggling
 const symbolsDirty = ref(false)             // pause server-sync once the user edits
-const symbolSearch = ref('')
 const applyingSymbols = ref(false)
 
 const fetchConfig = async () => {
@@ -36,11 +35,13 @@ const fetchConfig = async () => {
 const fetchLive = async () => {
   try {
     const [{ data: acct }, { data: accts }, { data: trs }] = await Promise.all([
-      supabase.from('account_state').select('symbols').order('updated_at', { ascending: false }).limit(1),
+      supabase.from('account_state').select('symbols,news_blackout,news_reason').order('updated_at', { ascending: false }).limit(1),
       supabase.from('mt5_accounts').select('*').order('created_at', { ascending: false }),
       supabase.from('trades').select('result,pnl,exit_time').order('created_at', { ascending: false }).limit(500),
     ])
-    discovered.value = ((acct && acct[0]?.symbols) || []) as string[]
+    const hb = (acct && acct[0]) || {}
+    discovered.value = (hb.symbols || []) as string[]
+    news.value = { blackout: !!hb.news_blackout, blackout_reason: hb.news_reason || '' }
     accounts.value = accts || []
     weekly.value = computeWeekly(trs || [], Number(config.value.weekly_goal) || 14)
   } catch {}
@@ -118,20 +119,28 @@ const control = async (action: string) => {
 }
 
 // --- symbol selection ---
+// Curated universe of symbols we'd ever trade. The bot checks each ACTIVE one
+// against the broker's offered set and silently skips any the broker lacks.
+// (We do NOT pull + render the broker's full symbol list — that was the bloat.)
+const PREFERRED_SYMBOLS = [
+  'XAUUSD', 'XAGUSD', 'XPTUSD', 'XPDUSD',                                  // metals
+  'EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'AUDUSD', 'NZDUSD', 'USDCAD',
+  'EURGBP', 'EURJPY', 'GBPJPY',                                            // forex
+  'BTCUSD', 'ETHUSD', 'LTCUSD', 'XRPUSD', 'SOLUSD',                        // crypto-CFD
+]
 const isActive = (sym: string) => activeBuffer.value.includes(sym)
+const isOffered = (sym: string) => !discovered.value.length || discovered.value.includes(sym)
 const toggleSymbol = (sym: string) => {
   symbolsDirty.value = true
   activeBuffer.value = isActive(sym)
     ? activeBuffer.value.filter(s => s !== sym)
     : [...activeBuffer.value, sym]
 }
+// preferred list, active first; unavailable-but-active flagged separately below
+const preferredList = computed(() =>
+  [...PREFERRED_SYMBOLS].sort((a, b) => Number(isActive(b)) - Number(isActive(a))))
 const missingActive = computed(() =>
   activeBuffer.value.filter(s => discovered.value.length && !discovered.value.includes(s)))
-const filteredDiscovered = computed(() => {
-  const q = symbolSearch.value.trim().toUpperCase()
-  const list = q ? discovered.value.filter(s => s.includes(q)) : discovered.value
-  return [...list].sort((a, b) => Number(isActive(b)) - Number(isActive(a)))
-})
 const applySymbols = async () => {
   applyingSymbols.value = true
   try {
@@ -273,36 +282,31 @@ const progressColor = (pct: number) => pct >= 100 ? 'var(--profit)' : pct >= 50 
       </div>
     </div>
 
-    <!-- Symbol selection (broker-discovered → curated active set) -->
+    <!-- Symbol selection (curated preferred list; broker availability shown) -->
     <div class="bg-(--card) border border-(--border) rounded-lg p-5">
       <div class="flex items-center justify-between mb-1">
         <h3 class="text-sm font-medium text-(--muted) uppercase">Symbols</h3>
-        <span class="text-xs text-(--muted)">
-          {{ activeBuffer.length }} active · {{ discovered.length }} offered by broker
-        </span>
+        <span class="text-xs text-(--muted)">{{ activeBuffer.length }} active</span>
       </div>
       <p class="text-xs text-(--muted) mb-3">
-        Discovered from the logged-in broker. Toggle what the bot trades — applies live, no restart.
+        Preferred instruments. Toggle what the bot trades — anything this broker doesn't
+        offer is silently skipped. Applies live, no restart.
       </p>
 
       <!-- active-but-not-offered warning -->
       <div v-if="missingActive.length" class="mb-3 text-xs flex items-center gap-2 text-(--warning)">
         <span>⚠</span>
-        <span>Active but not offered by this broker: {{ missingActive.join(', ') }} (will be skipped).</span>
+        <span>Not offered by this broker (will be skipped): {{ missingActive.join(', ') }}</span>
       </div>
 
-      <input v-model="symbolSearch" placeholder="Search symbols…"
-        class="w-full mb-3 px-3 py-2 rounded bg-(--bg) border border-(--border) text-(--text) text-sm" />
-
-      <div v-if="discovered.length" class="grid grid-cols-3 gap-2 max-h-56 overflow-y-auto pr-1">
-        <label v-for="sym in filteredDiscovered" :key="sym"
-          class="flex items-center gap-2 p-2 rounded bg-(--bg) cursor-pointer text-sm">
+      <div class="grid grid-cols-3 gap-2">
+        <label v-for="sym in preferredList" :key="sym"
+          class="flex items-center gap-2 p-2 rounded bg-(--bg) cursor-pointer text-sm"
+          :class="!isOffered(sym) ? 'opacity-50' : ''">
           <input type="checkbox" :checked="isActive(sym)" @change="toggleSymbol(sym)" class="w-4 h-4 rounded" />
           <span>{{ sym }}</span>
+          <span v-if="discovered.length && !isOffered(sym)" class="ml-auto text-[10px] text-(--muted)">n/a</span>
         </label>
-      </div>
-      <div v-else class="text-center text-(--muted) text-sm py-4">
-        No symbols discovered yet — starts once the bot connects to the broker.
       </div>
 
       <div class="mt-4 flex items-center gap-3">

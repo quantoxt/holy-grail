@@ -12,6 +12,13 @@ from supabase import create_client
 from shared.config import settings
 
 
+def _jsonable(obj):
+    """Return obj as JSON-native Python (lists/dicts/str/num) with non-serializable
+    values stringified. For jsonb columns pass the RESULT of this — NOT json.dumps,
+    which double-encodes into a jsonb string and breaks the dashboard's array reads."""
+    return json.loads(json.dumps(obj, default=str))
+
+
 class DBLogger:
     def __init__(self):
         self._client = None
@@ -35,7 +42,7 @@ class DBLogger:
             "candle_time": candle_time,
             "model_version": settings.kronos_model,
             "lookback": lookback, "pred_len": pred_len, "sample_count": sample_count,
-            "predictions": json.dumps(predictions_list, default=str),
+            "predictions": _jsonable(predictions_list),
             "predicted_close": predicted_close,
             "predicted_direction": predicted_direction,
             "predicted_magnitude": predicted_magnitude,
@@ -78,21 +85,24 @@ class DBLogger:
     def log_risk_event(self, event_type, reason, data=None, lot_before=None, lot_after=None):
         self.client.table("risk_events").insert({
             "event_type": event_type, "reason": reason,
-            "data": json.dumps(data) if data else None,
+            "data": _jsonable(data) if data else None,
             "lot_before": lot_before, "lot_after": lot_after,
         }).execute()
 
     # --- account state (live heartbeat — bot writes, dashboard reads) ---
     def upsert_account_state(self, login, broker, balance, equity, currency,
-                             floating_pnl, open_positions, symbols):
+                             floating_pnl, open_positions, symbols,
+                             news_blackout=False, news_reason=""):
         """Upsert one row per MT5 login. Written by the bot's ~5s telemetry task;
-        read by GET /api/account for the dashboard."""
+        read directly by the Vercel dashboard."""
         self.client.table("account_state").upsert({
             "login": login, "broker": broker,
             "balance": balance, "equity": equity, "currency": currency,
             "floating_pnl": floating_pnl,
-            "open_positions": json.dumps(open_positions, default=str),
-            "symbols": json.dumps(symbols, default=str),
+            "open_positions": _jsonable(open_positions),
+            "symbols": _jsonable(symbols),
+            "news_blackout": bool(news_blackout),
+            "news_reason": news_reason or "",
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }, on_conflict="login").execute()
 
