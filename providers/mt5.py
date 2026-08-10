@@ -179,33 +179,23 @@ class MT5Provider(MarketProvider):
 
     # --- broker symbol availability (single broker: forex/metals/crypto-CFD) ---
     def discover_symbols(self, force: bool = False) -> list[str]:
-        """Which PREFERRED symbols this broker actually offers. Checked via
-        `mt5.symbol_info` (broker availability), NOT Market Watch visibility — a
-        symbol can be offered without being in Market Watch (the bot adds it via
-        symbol_select before trading). Cached; force=True to refresh (telemetry
-        does this periodically). Published to the dashboard for availability markers."""
+        """Which PREFERRED symbols this broker actually offers, resolved through the
+        broker's naming (e.g. 'EURUSD' matches Headway's 'EURUSD.'). Cached; force=True
+        to refresh the index (telemetry does this periodically)."""
         if self._symbols is None or force:
             from shared.symbols import PREFERRED_SYMBOLS
-            offered = set()
-            for s in PREFERRED_SYMBOLS:
-                try:
-                    if mt5.symbol_info(s) is not None:
-                        offered.add(s)
-                except Exception:
-                    pass
-            self._symbols = offered
+            self._load_symbol_index(force=force)
+            self._symbols = {s for s in PREFERRED_SYMBOLS if self._broker_symbol(s) is not None}
         return sorted(self._symbols)
 
     def is_offered(self, symbol: str) -> bool:
-        """True if the broker offers `symbol` (accurate, Market-Watch-independent)."""
-        try:
-            return mt5.symbol_info(symbol) is not None
-        except Exception:
-            return False
+        """True if the broker offers `symbol` under any naming variant."""
+        return self._broker_symbol(symbol) is not None
 
     # --- data ---
     async def get_candles(self, symbol, timeframe, limit):
-        rates = mt5.copy_rates_from_pos(symbol, _TF.get(timeframe, mt5.TIMEFRAME_M5), 0, limit)
+        b = self._broker_symbol(symbol) or symbol
+        rates = mt5.copy_rates_from_pos(b, _TF.get(timeframe, mt5.TIMEFRAME_M5), 0, limit)
         df = pd.DataFrame(rates)
         df["timestamps"] = pd.to_datetime(df["time"], unit="s", utc=True).dt.strftime("%Y-%m-%d %H:%M")
         df["volume"] = df.get("tick_volume", 0)
@@ -214,21 +204,23 @@ class MT5Provider(MarketProvider):
 
     # --- sizing: USDT notional -> lots ---
     def _lots(self, symbol, notional_usd):
-        info = mt5.symbol_info(symbol)
-        price = mt5.symbol_info_tick(symbol).ask
+        b = self._broker_symbol(symbol) or symbol
+        info = mt5.symbol_info(b)
+        price = mt5.symbol_info_tick(b).ask
         lots = notional_usd / (info.trade_contract_size * price)
         return max(info.volume_min, round(lots / info.volume_step) * info.volume_step)
 
     # --- execution ---
     async def open_position(self, symbol, direction, size, sl=None, tp=None):
-        info = mt5.symbol_info(symbol)
+        b = self._broker_symbol(symbol) or symbol   # orders must use the broker-exact name
+        info = mt5.symbol_info(b)
         if not info.visible:
-            mt5.symbol_select(symbol, True)
+            mt5.symbol_select(b, True)
         lots = self._lots(symbol, size)
-        tick = mt5.symbol_info_tick(symbol)
+        tick = mt5.symbol_info_tick(b)
         price = tick.ask if direction == "BUY" else tick.bid
         order = {
-            "action": mt5.TRADE_ACTION_DEAL, "symbol": symbol, "volume": lots,
+            "action": mt5.TRADE_ACTION_DEAL, "symbol": b, "volume": lots,
             "type": mt5.ORDER_TYPE_BUY if direction == "BUY" else mt5.ORDER_TYPE_SELL,
             "price": price, "deviation": 20, "magic": MAGIC, "comment": "holygrail",
             "type_time": mt5.ORDER_TIME_GTC, "type_filling": mt5.ORDER_FILLING_IOC,
@@ -246,7 +238,7 @@ class MT5Provider(MarketProvider):
     def get_spread(self, symbol) -> float:
         """Current spread in PRICE (ask - bid). 0 if unavailable."""
         try:
-            t = mt5.symbol_info_tick(symbol)
+            t = mt5.symbol_info_tick(self._broker_symbol(symbol) or symbol)
             return (t.ask - t.bid) if t else 0.0
         except Exception:
             return 0.0
@@ -254,7 +246,7 @@ class MT5Provider(MarketProvider):
     def last_price(self, symbol) -> tuple[float, float] | None:
         """(bid, ask) or None."""
         try:
-            t = mt5.symbol_info_tick(symbol)
+            t = mt5.symbol_info_tick(self._broker_symbol(symbol) or symbol)
             return (t.bid, t.ask) if t else None
         except Exception:
             return None
@@ -325,7 +317,7 @@ class MT5Provider(MarketProvider):
         for p in (positions or []):
             if magic is not None and getattr(p, "magic", 0) != magic:
                 continue
-            out.append({"ticket": p.ticket, "symbol": p.symbol,
+            out.append({"ticket": p.ticket, "symbol": self._base_symbol(p.symbol),
                         "type": "BUY" if p.type == mt5.POSITION_TYPE_BUY else "SELL",
                         "volume": p.volume, "entry": p.price_open,
                         "price_current": p.price_current,
@@ -345,10 +337,11 @@ class MT5Provider(MarketProvider):
 
     async def get_symbol_info(self, symbol: str) -> dict:
         """Live contract specs from MT5 — accurate per broker."""
-        info = mt5.symbol_info(symbol)
+        b = self._broker_symbol(symbol) or symbol
+        info = mt5.symbol_info(b)
         if info is None:
-            mt5.symbol_select(symbol, True)
-            info = mt5.symbol_info(symbol)
+            mt5.symbol_select(b, True)
+            info = mt5.symbol_info(b)
         if info is None:
             return {"contract_size": 1.0, "volume_min": 0.01, "volume_step": 0.01}
         return {
