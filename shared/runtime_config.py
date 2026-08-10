@@ -122,6 +122,11 @@ class RuntimeConfig:
                 for k, v in cfg.items():
                     if k.startswith("_") or k in self._internal:
                         continue
+                    # null in the stored row means "not configured" (e.g. a field added
+                    # after the row was seeded) — keep the dataclass default rather than
+                    # clobbering it with None (which would crash numeric math downstream).
+                    if v is None:
+                        continue
                     if hasattr(self, k):
                         setattr(self, k, v)
         except Exception:
