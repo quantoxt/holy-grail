@@ -40,6 +40,7 @@ class Sentinel:
         self.last_day: date | None = None
         self.last_week_start: date | None = None
         self.weekly_withdrawn = 0.0
+        self.weekly_goal_locked = False   # latched once the $-ceiling is banked this week
         # stats
         self.total_trades = 0
         self.wins = 0
@@ -68,36 +69,53 @@ class Sentinel:
             self.weekly_pnl = 0.0
             self.daily_pnl = 0.0
             self.consecutive_losses = 0
+            self.weekly_goal_locked = False
             self.last_week_start = week_start
 
     # ---- kill switches ----
 
     def check_kill(self, equity: float, open_positions: int = 0,
-                   symbols: list | None = None) -> tuple[bool, str]:
-        """Returns (should_stop_trading, reason)."""
+                   symbols: list | None = None,
+                   floating_pnl: float = 0.0) -> tuple[bool, str, bool]:
+        """Returns (should_stop_trading, reason, close_all_open).
+
+        close_all=True means "get out NOW" (bank the goal / stop the bleed) — the
+        loop closes every open position. False means "just don't open more".
+
+        equity is LIVE (includes floating), so a +$14 in-flight trade counts toward
+        the goal — the overnight bug was holding a winner to horizon and giving it back.
+        """
         if not self.cfg.bot_running:
-            return True, "bot_stopped"
+            return True, "bot_stopped", False
         if self.cfg.trading_paused:
-            return True, "paused"
-        if self.weekly_pnl >= self.cfg.weekly_goal:
-            return True, f"weekly_goal_hit (${self.weekly_pnl:.2f} >= ${self.cfg.weekly_goal:.2f})"
+            return True, "paused", False
+        # weekly goal — realized OR floating (in-flight profit counts)
+        if self.weekly_goal_locked or (self.weekly_pnl + floating_pnl) >= self.cfg.weekly_goal:
+            self.weekly_goal_locked = True
+            return (True, f"weekly_goal_hit (${self.weekly_pnl + floating_pnl:.2f} "
+                    f">= ${self.cfg.weekly_goal:.2f})", True)
+        # hard equity ceiling: baseline + goal reached → bank everything, stop for the week
+        ceiling = self.cfg.baseline_equity + self.cfg.weekly_goal
+        if equity >= ceiling:
+            self.weekly_goal_locked = True
+            return True, f"equity_ceiling (${equity:.2f} >= ${ceiling:.2f})", True
         floor = self.cfg.baseline_equity - self.cfg.max_weekly_drawdown
         if equity <= floor:
-            return True, f"equity_floor (${equity:.2f} <= ${floor:.2f})"
+            return True, f"equity_floor (${equity:.2f} <= ${floor:.2f})", True
         if self.daily_pnl <= -self.cfg.max_daily_loss:
-            return True, f"daily_loss_cap (${self.daily_pnl:.2f})"
+            return True, f"daily_loss_cap (${self.daily_pnl:.2f})", True
         if open_positions >= self.cfg.max_open_positions:
-            return True, f"max_positions ({open_positions})"
+            return True, f"max_positions ({open_positions})", False
         if self.consecutive_losses >= 5:
-            return True, f"consecutive_losses ({self.consecutive_losses})"
+            return True, f"consecutive_losses ({self.consecutive_losses})", True
         # news blackout
         if self.cfg.news_blackout_enabled and symbols:
             from shared.news import is_blackout
             blocked, breason = is_blackout(
                 symbols, self.cfg.news_blackout_pre_min, self.cfg.news_blackout_post_min)
             if blocked:
-                return True, breason
-        return False, "ok"
+                return True, breason, False
+        return False, "ok", False
 
     # ---- risk computation ----
 

@@ -23,6 +23,9 @@ _TF = {
     "1h": mt5.TIMEFRAME_H1, "4h": mt5.TIMEFRAME_H4, "1d": mt5.TIMEFRAME_D1,
 }
 
+MAGIC = 234000   # every order the bot opens is tagged with this so it only ever
+                 # manages ITS OWN positions (never a manual trade on the account)
+
 
 class MT5Provider(MarketProvider):
     name = "mt5"
@@ -135,26 +138,31 @@ class MT5Provider(MarketProvider):
         except Exception:
             pass
 
-    # --- broker symbol discovery (single broker: forex/metals/crypto-CFD) ---
+    # --- broker symbol availability (single broker: forex/metals/crypto-CFD) ---
     def discover_symbols(self, force: bool = False) -> list[str]:
-        """Tradeable symbol names offered by this broker (visible in Market Watch).
-        Cached on the provider; pass force=True to refresh (the telemetry task
-        does this periodically). Used by the loop to skip active_symbols the
-        logged-in broker doesn't actually offer (e.g. BTCUSD on a forex-only account)."""
+        """Which PREFERRED symbols this broker actually offers. Checked via
+        `mt5.symbol_info` (broker availability), NOT Market Watch visibility — a
+        symbol can be offered without being in Market Watch (the bot adds it via
+        symbol_select before trading). Cached; force=True to refresh (telemetry
+        does this periodically). Published to the dashboard for availability markers."""
         if self._symbols is None or force:
-            try:
-                all_syms = mt5.symbols_get() or []
-                self._symbols = {s.name for s in all_syms if s.visible}
-            except Exception:
-                # keep whatever cache we have; empty-set on first failure
-                self._symbols = self._symbols or set()
+            from shared.symbols import PREFERRED_SYMBOLS
+            offered = set()
+            for s in PREFERRED_SYMBOLS:
+                try:
+                    if mt5.symbol_info(s) is not None:
+                        offered.add(s)
+                except Exception:
+                    pass
+            self._symbols = offered
         return sorted(self._symbols)
 
     def is_offered(self, symbol: str) -> bool:
-        """True if the broker offers `symbol`. Lazily fills the cache once."""
-        if self._symbols is None:
-            self.discover_symbols()
-        return symbol in (self._symbols or set())
+        """True if the broker offers `symbol` (accurate, Market-Watch-independent)."""
+        try:
+            return mt5.symbol_info(symbol) is not None
+        except Exception:
+            return False
 
     # --- data ---
     async def get_candles(self, symbol, timeframe, limit):
@@ -183,7 +191,7 @@ class MT5Provider(MarketProvider):
         order = {
             "action": mt5.TRADE_ACTION_DEAL, "symbol": symbol, "volume": lots,
             "type": mt5.ORDER_TYPE_BUY if direction == "BUY" else mt5.ORDER_TYPE_SELL,
-            "price": price, "deviation": 20, "magic": 234000, "comment": "holygrail",
+            "price": price, "deviation": 20, "magic": MAGIC, "comment": "holygrail",
             "type_time": mt5.ORDER_TIME_GTC, "type_filling": mt5.ORDER_FILLING_IOC,
         }
         if sl:
@@ -195,6 +203,36 @@ class MT5Provider(MarketProvider):
         return {"id": res.order if res else None, "symbol": symbol, "direction": direction,
                 "entry_price": price, "size": size, "lots": lots, "ok": ok,
                 "retcode": res.retcode if res else None}
+
+    def get_spread(self, symbol) -> float:
+        """Current spread in PRICE (ask - bid). 0 if unavailable."""
+        try:
+            t = mt5.symbol_info_tick(symbol)
+            return (t.ask - t.bid) if t else 0.0
+        except Exception:
+            return 0.0
+
+    def last_price(self, symbol) -> tuple[float, float] | None:
+        """(bid, ask) or None."""
+        try:
+            t = mt5.symbol_info_tick(symbol)
+            return (t.bid, t.ask) if t else None
+        except Exception:
+            return None
+
+    def modify_sl(self, position_ticket, new_sl) -> bool:
+        """Tighten a position's stop-loss (breakeven trail). Returns True on success."""
+        try:
+            pos = mt5.positions_get(ticket=position_ticket)
+            if not pos:
+                return False
+            p = pos[0]
+            order = {"action": mt5.TRADE_ACTION_SLTP, "symbol": p.symbol,
+                     "position": position_ticket, "sl": new_sl, "tp": p.tp}
+            res = mt5.order_send(order)
+            return bool(res and res.retcode == mt5.TRADE_RETCODE_DONE)
+        except Exception:
+            return False
 
     async def close_position(self, position_id):
         pos = mt5.positions_get(ticket=position_id)
@@ -220,13 +258,22 @@ class MT5Provider(MarketProvider):
         info = mt5.account_info()
         return {"balance": info.balance, "currency": info.currency, "equity": info.equity}
 
-    async def get_open_positions(self, symbol=None):
+    async def get_open_positions(self, symbol=None, magic=MAGIC):
+        """Open positions, by default filtered to OUR magic (the bot only ever
+        manages its own trades — never a manual position on the account). Includes
+        sl + open time so the loop can reconcile after a restart and manage exits."""
         positions = mt5.positions_get(symbol) if symbol else mt5.positions_get()
-        return [{"ticket": p.ticket, "symbol": p.symbol,
-                 "type": "BUY" if p.type == mt5.POSITION_TYPE_BUY else "SELL",
-                 "volume": p.volume, "entry": p.price_open,
-                 "price_current": p.price_current,
-                 "profit": p.profit} for p in (positions or [])]   # profit = floating PnL (acct ccy)
+        out = []
+        for p in (positions or []):
+            if magic is not None and getattr(p, "magic", 0) != magic:
+                continue
+            out.append({"ticket": p.ticket, "symbol": p.symbol,
+                        "type": "BUY" if p.type == mt5.POSITION_TYPE_BUY else "SELL",
+                        "volume": p.volume, "entry": p.price_open,
+                        "price_current": p.price_current,
+                        "profit": p.profit,        # floating PnL (account currency)
+                        "sl": p.sl, "time": p.time})
+        return out
 
     async def account_summary(self) -> dict:
         """Full live account snapshot for the dashboard heartbeat. Raises if the

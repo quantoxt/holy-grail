@@ -46,6 +46,12 @@ class Settings:
     sample_count: int = 1       # CPU-safe on the VPS
     confidence_threshold: float = 0.003   # |predicted_move| >= 0.3% to trade (55% slice)
 
+    # --- execution guards (spread / volatility / trailing) ---
+    spread_max_of_move: float = 0.25   # skip if spread > 25% of |predicted_move| (eats the edge)
+    snr_min: float = 1.0               # skip if |move| / horizon-noise < 1 (signal lost in noise)
+    breakeven_lock: bool = True        # once +1× move in favor, slide safety SL to breakeven
+    breakeven_lock_mult: float = 1.0   # how much favorable move (× |predicted_move|) before locking
+
     # --- risk (Sentinel) ---
     base_stake: float = field(default_factory=lambda: _envf("BASE_STAKE", 1.0))
     max_stake_mult: float = 5.0
