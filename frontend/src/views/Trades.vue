@@ -28,7 +28,7 @@ onUnmounted(() => clearInterval(timer))
             <th class="text-left p-2">Dir</th>
             <th class="text-right p-2">Entry</th>
             <th class="text-right p-2">Exit</th>
-            <th class="text-right p-2">Size</th>
+            <th class="text-right p-2">Lot</th>
             <th class="text-right p-2">P&L</th>
             <th class="text-center p-2">Result</th>
           </tr>
@@ -41,7 +41,7 @@ onUnmounted(() => clearInterval(timer))
                 :class="t.direction === 'BUY' ? 'text-(--profit)' : 'text-(--loss)'">{{ t.direction }}</td>
             <td class="p-2 text-right">{{ t.entry_price?.toFixed(2) ?? '—' }}</td>
             <td class="p-2 text-right">{{ t.exit_price?.toFixed(2) ?? '—' }}</td>
-            <td class="p-2 text-right">{{ t.size?.toFixed(1) ?? '—' }}</td>
+            <td class="p-2 text-right">{{ t.size != null ? Number(t.size).toFixed(2) : '—' }}</td>
             <td class="p-2 text-right font-medium"
                 :class="(t.pnl ?? 0) >= 0 ? 'text-(--profit)' : 'text-(--loss)'">
               {{ t.pnl != null ? (t.pnl >= 0 ? '+' : '') + t.pnl.toFixed(2) : '—' }}
