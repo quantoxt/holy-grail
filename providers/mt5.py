@@ -220,6 +220,25 @@ class MT5Provider(MarketProvider):
         except Exception:
             return None
 
+    def get_closed_deal(self, position_ticket):
+        """Realized outcome of a CLOSED position (SL hit between ticks, manual
+        close, crash mid-close) from the deal history — {pnl, price, time} or
+        None if not found / history unavailable. Lets the loop log closes for
+        positions it didn't close itself, so trades never stick at 'open'."""
+        try:
+            from datetime import datetime, timezone, timedelta
+            to = datetime.now(timezone.utc)
+            frm = to - timedelta(days=7)
+            deals = mt5.history_deals_get(frm, to)
+            for d in (deals or []):
+                if (getattr(d, "position", 0) == position_ticket
+                        and getattr(d, "entry", -1) == mt5.DEAL_ENTRY_OUT):
+                    return {"pnl": float(d.profit), "price": float(d.price),
+                            "time": int(getattr(d, "time", 0))}
+        except Exception:
+            return None
+        return None
+
     def modify_sl(self, position_ticket, new_sl) -> bool:
         """Tighten a position's stop-loss (breakeven trail). Returns True on success."""
         try:

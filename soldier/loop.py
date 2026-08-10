@@ -286,8 +286,8 @@ class Trader:
             }
             try:
                 self.open[sym]["trade_id"] = db.log_trade_open(
-                    sym, sig["direction"], entry, risk, sig["confidence"],
-                    settings.pred_len, paper=False)
+                    sym, sig["direction"], entry, lot, sig["confidence"],
+                    settings.pred_len, paper=False, ticket=ticket)
             except Exception:
                 pass
 
@@ -380,6 +380,50 @@ class Trader:
                 await self._close_position(sym, self.open[sym], reason=reason)
             except Exception as e:
                 self.log(type="ERROR", msg=f"close_all failed {sym}: {e}")
+
+    async def _reconcile_closed(self, open_tickets: set):
+        """A position we track whose ticket is no longer at the broker was closed
+        externally — SL hit between ticks, manual close, or a crash mid-close (the
+        overnight bug: trades stuck at 'open' forever). Look up its realized outcome
+        in the deal history and log the close so the trades tab stays accurate.
+        Falls back to an estimate from the last price if the deal can't be found."""
+        for sym, pos in list(self.open.items()):
+            ticket = pos.get("ticket")
+            if not ticket or ticket in open_tickets:
+                continue
+            exit_price, pnl, result = None, 0.0, "loss"
+            deal = None
+            if hasattr(self.provider, "get_closed_deal"):
+                try:
+                    deal = self.provider.get_closed_deal(ticket)
+                except Exception:
+                    deal = None
+            if deal:
+                pnl, exit_price = deal["pnl"], deal["price"]
+                result = "win" if pnl > 0 else "loss"
+            else:
+                # deal not found (history window/permission) — estimate from last price
+                try:
+                    candles = await self.provider.get_candles(sym, settings.timeframe, 5)
+                    exit_price = float(candles["close"].iloc[-1])
+                except Exception:
+                    exit_price = pos["entry_price"]
+                direction_sign = 1 if pos["direction"] == "BUY" else -1
+                pnl = (exit_price - pos["entry_price"]) * direction_sign \
+                    * pos["lot"] * pos["contract_size"]
+                result = "win" if pnl > 0 else "loss"
+            correct = pnl > 0
+            self.sentinel.on_trade_closed(pnl, correct)
+            self.watcher.record_resolution(correct)
+            self.log(type="CLOSE", symbol=sym, dir=pos["direction"], reason="external",
+                     entry=round(pos["entry_price"], 2), exit=round(exit_price, 2),
+                     pnl=f"${pnl:+.2f}", result=("WIN ✅" if correct else "LOSS ❌"),
+                     weekly_pnl=f"${self.sentinel.weekly_pnl:.2f}")
+            try:
+                db.log_trade_close(pos.get("trade_id"), exit_price, pnl, result)
+            except Exception:
+                pass
+            self.open.pop(sym, None)
 
     def _manage_exits(self, broker_positions):
         """Per-position SL management, called from telemetry every ~5s. Two tiers:
@@ -484,6 +528,9 @@ class Trader:
                 await self._maybe_switch_account()                  # dashboard-driven swap
                 acct = await self.provider.account_summary()
                 positions = await self.provider.get_open_positions()
+                # log closes for any tracked position the broker no longer has
+                # (SL hit / manual close / crash mid-close) so trades don't stick at 'open'
+                await self._reconcile_closed({p["ticket"] for p in positions})
                 floating = round(sum(p.get("profit", 0) for p in positions), 2)
                 # goal/ceiling bank (5s reaction) — else manage per-position exits
                 await self._maybe_bank_goal(acct["equity"], floating)
