@@ -3,6 +3,16 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { supabase, patchConfig } from '../lib/supabase'
 
 const config = ref<any>({})
+// Defaults for fields that may be absent from an older bot_config row (they'd
+// otherwise bind to undefined → show 0 → and a Save would write 0/null back).
+const CONFIG_DEFAULTS: Record<string, any> = {
+  risk_cap_pct: 0.03,
+  profit_lock_target: 5.0,
+  profit_lock_min: 2.0,
+  profit_lock_fraction: 0.5,
+  sl_multiplier: 2.0,
+  max_open_positions: 2,
+}
 const weekly = ref<any>({ weekly_pnl: 0, weekly_goal: 14, weekly_progress_pct: 0, daily_pnl: 0, total_trades: 0, win_rate: 0, consecutive_losses: 0 })
 const accounts = ref<any[]>([])
 const botState = ref('running')
@@ -23,6 +33,13 @@ const fetchConfig = async () => {
   try {
     const { data } = await supabase.from('bot_config').select('config').eq('id', 1).limit(1).single()
     const c = (data?.config || {}) as Record<string, any>
+    // fill any missing/blank field with its default so the form never shows 0 for
+    // an unconfigured value (which would then get saved back as 0).
+    for (const [k, d] of Object.entries(CONFIG_DEFAULTS)) {
+      if (c[k] === undefined || c[k] === null || c[k] === '' || (typeof d === 'number' && Number(c[k]) === 0 && Number(d) !== 0)) {
+        c[k] = d
+      }
+    }
     config.value = c
     if (!symbolsDirty.value) activeBuffer.value = [...(c.active_symbols || [])]
     botState.value = c.trading_paused ? 'paused' : (c.bot_running ? 'running' : 'stopped')
