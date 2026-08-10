@@ -287,7 +287,8 @@ class Trader:
             try:
                 self.open[sym]["trade_id"] = db.log_trade_open(
                     sym, sig["direction"], entry, lot, sig["confidence"],
-                    settings.pred_len, paper=False, ticket=ticket)
+                    settings.pred_len, paper=False, ticket=ticket,
+                    mt5_login=getattr(self.provider, "_login", None))
             except Exception:
                 pass
 
@@ -561,9 +562,15 @@ class Trader:
             return
         try:
             self.provider.reconnect()
-            self.log(type="SWITCH", msg=f"switched to {self.provider.account_name}")
+            # A new active account is a clean slate: drop the prior account's
+            # in-memory positions (they don't exist on this login) and zero the
+            # P&L/streak tracking so nothing carries over.
+            self.open.clear()
+            self.sentinel.reset_for_new_account()
+            self.log(type="SWITCH", msg=f"switched to {self.provider.account_name} "
+                     f"(login {getattr(self.provider, '_login', '?')}) — stats reset")
             try:
-                await send_telegram(f"🔄 MT5 account switched to {self.provider.account_name}")
+                await send_telegram(f"🔄 MT5 account switched to {self.provider.account_name} — fresh start")
             except Exception:
                 pass
         except Exception as e:

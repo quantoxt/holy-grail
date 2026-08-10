@@ -6,9 +6,13 @@ const trades = ref<any[]>([])
 let timer: number
 const fetchTrades = async () => {
   try {
-    const { data } = await supabase.from('trades')
-      .select('*').order('created_at', { ascending: false }).limit(50)
-    trades.value = data || []
+    // scope to the ACTIVE account's trades (a new account = fresh history)
+    const [{ data: acct }, { data }] = await Promise.all([
+      supabase.from('account_state').select('login').order('updated_at', { ascending: false }).limit(1),
+      supabase.from('trades').select('*').order('created_at', { ascending: false }).limit(50),
+    ])
+    const login = acct && acct[0] && acct[0].login
+    trades.value = (data || []).filter((t) => !login || Number(t.mt5_login) === Number(login))
   } catch {}
 }
 onMounted(() => { fetchTrades(); timer = setInterval(fetchTrades, 5000) })

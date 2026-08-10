@@ -31,7 +31,10 @@ const fetchData = async () => {
     ])
     account.value = (acctRow && acctRow[0]) || {}
     signals.value = sigRows || []
-    const all = tradeRows || []
+    // scope stats/history to the ACTIVE account — a newly-connected account the
+    // bot hasn't traded starts at a clean slate (no carryover from prior accounts)
+    const login = account.value?.login
+    const all = (tradeRows || []).filter((t) => !login || Number(t.mt5_login) === Number(login))
     trades.value = all.slice(0, 10)
     const closed = all.filter((t) => t.result === 'win' || t.result === 'loss')
     const wins = closed.filter((t) => t.result === 'win').length

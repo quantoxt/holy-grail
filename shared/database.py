@@ -65,13 +65,14 @@ class DBLogger:
         }).execute()
 
     # --- trades (open + close) ---
-    def log_trade_open(self, symbol, direction, entry_price, size, confidence, horizon, paper=True, ticket=None):
+    def log_trade_open(self, symbol, direction, entry_price, size, confidence, horizon, paper=True, ticket=None, mt5_login=None):
         resp = self.client.table("trades").insert({
             "symbol": symbol, "market_mode": settings.market_mode, "paper": paper,
             "direction": direction, "entry_price": entry_price,
             "entry_time": datetime.now(timezone.utc).isoformat(),
             "size": size, "confidence": confidence, "horizon": horizon,
             "result": "open", "provider_ticket": str(ticket) if ticket else None,
+            "mt5_login": mt5_login,
         }).execute()
         return resp.data[0]["id"] if resp.data else None
 

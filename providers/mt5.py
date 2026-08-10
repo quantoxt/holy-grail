@@ -32,9 +32,48 @@ class MT5Provider(MarketProvider):
 
     def __init__(self, account: str | None = None):
         self._symbols: set[str] | None = None   # broker-discovered symbol cache
+        self._symindex: list[str] | None = None  # full broker symbol list (for resolution)
+        self._symap: dict[str, str | None] = {}  # friendly/base -> broker-exact name cache
         self._failed_login: int | None = None   # login we tried & failed — don't hammer it
         self._connect(account)
         self._watched_account = self.account_name
+
+    # --- symbol resolution (brokers name the same instrument differently) ---
+    def _load_symbol_index(self, force: bool = False):
+        """Load the broker's full symbol list once (364 on Headway). Used to resolve
+        friendly names like 'EURUSD' to the broker's exact 'EURUSD.' / 'EURUSD.r'."""
+        if self._symindex is not None and not force:
+            return
+        try:
+            self._symindex = sorted(s.name for s in (mt5.symbols_get() or []))
+            self._symap = {}   # invalidate the friendly->broker cache on reload
+        except Exception:
+            self._symindex = self._symindex or []
+
+    def _broker_symbol(self, base: str) -> str | None:
+        """Map a friendly/base symbol ('EURUSD') to the broker's exact name
+        ('EURUSD.' on Headway, 'EURUSD' on MetaQuotes-Demo). Exact match first, then
+        prefix match (shortest suffix wins — 'EURUSD.' over 'EURUSD.raw'). None if
+        the broker doesn't offer it. Cached per base."""
+        self._load_symbol_index()
+        if base in self._symap:
+            return self._symap[base]
+        if base in self._symindex:
+            self._symap[base] = base
+            return base
+        pref = [s for s in self._symindex if s.startswith(base)]
+        if pref:
+            chosen = min(pref, key=len)   # nearest name (fewest extra chars)
+            self._symap[base] = chosen
+            return chosen
+        self._symap[base] = None
+        return None
+
+    @staticmethod
+    def _base_symbol(broker_name: str) -> str:
+        """Inverse: broker-exact 'EURUSD.' -> base 'EURUSD' (strip suffix after a dot,
+        which is how most brokers suffix variants: . , .r, .raw, _)."""
+        return broker_name.split(".")[0].split("_")[0] if broker_name else broker_name
 
     def _init_timed(self, creds: dict, timeout: float = 40.0) -> bool:
         """mt5.initialize() is a BLOCKING C call that can hang for minutes on an
