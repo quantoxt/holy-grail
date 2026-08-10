@@ -83,6 +83,10 @@ const save = async () => {
       max_weekly_drawdown: Number(config.value.max_weekly_drawdown),
       max_open_positions: Number(config.value.max_open_positions),
       sl_multiplier: Number(config.value.sl_multiplier),
+      risk_cap_pct: Number(config.value.risk_cap_pct),
+      profit_lock_target: Number(config.value.profit_lock_target),
+      profit_lock_min: Number(config.value.profit_lock_min),
+      profit_lock_fraction: Number(config.value.profit_lock_fraction),
       thursday_aggression: config.value.thursday_aggression,
       active_symbols: config.value.active_symbols,
     })
@@ -206,7 +210,7 @@ const progressColor = (pct: number) => pct >= 100 ? 'var(--profit)' : pct >= 50 
         <div class="h-full rounded-full transition-all duration-500"
           :style="{ width: Math.min(100, weekly.weekly_progress_pct ?? 0) + '%', background: progressColor(weekly.weekly_progress_pct ?? 0) }" />
       </div>
-      <div class="grid grid-cols-4 gap-4 text-sm">
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
         <div><span class="text-(--muted)">Today</span><br>${{ (weekly.daily_pnl ?? 0).toFixed(2) }}</div>
         <div><span class="text-(--muted)">Trades</span><br>{{ weekly.total_trades ?? 0 }}</div>
         <div><span class="text-(--muted)">Win Rate</span><br>{{ ((weekly.win_rate ?? 0) * 100).toFixed(1) }}%</div>
@@ -226,7 +230,7 @@ const progressColor = (pct: number) => pct >= 100 ? 'var(--profit)' : pct >= 50 
     <!-- Auto-calibrate -->
     <div class="bg-(--card) border border-(--border) rounded-lg p-5">
       <h3 class="text-sm font-medium text-(--muted) uppercase mb-3">Account & Auto-Calibrate</h3>
-      <div class="flex gap-4 items-end mb-4">
+      <div class="flex flex-col sm:flex-row gap-4 items-stretch sm:items-end mb-4">
         <label class="block flex-1">
           <span class="text-xs text-(--muted)">Account Balance ($)</span>
           <input v-model.number="config.baseline_equity" type="number" step="1"
@@ -243,10 +247,15 @@ const progressColor = (pct: number) => pct >= 100 ? 'var(--profit)' : pct >= 50 
           {{ calibrating ? 'Calibrating...' : '⚙ Auto-Calibrate' }}
         </button>
       </div>
-      <div class="grid grid-cols-3 gap-4">
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <label class="block">
-          <span class="text-xs text-(--muted)">Risk / Trade ($)</span>
+          <span class="text-xs text-(--muted)">Risk / Trade ($, reference)</span>
           <input v-model.number="config.max_risk_per_trade" type="number" step="0.1"
+            class="w-full mt-1 px-3 py-2 rounded bg-(--bg) border border-(--border) text-(--text)" />
+        </label>
+        <label class="block">
+          <span class="text-xs text-(--muted)">Risk Cap (% of equity)</span>
+          <input v-model.number="config.risk_cap_pct" type="number" step="0.005" min="0.005" max="0.2"
             class="w-full mt-1 px-3 py-2 rounded bg-(--bg) border border-(--border) text-(--text)" />
         </label>
         <label class="block">
@@ -267,6 +276,30 @@ const progressColor = (pct: number) => pct >= 100 ? 'var(--profit)' : pct >= 50 
         <label class="block">
           <span class="text-xs text-(--muted)">SL Multiplier</span>
           <input v-model.number="config.sl_multiplier" type="number" step="0.1" min="0.5" max="5"
+            class="w-full mt-1 px-3 py-2 rounded bg-(--bg) border border-(--border) text-(--text)" />
+        </label>
+      </div>
+
+      <!-- Goal-aware exit (profit-lock + weekly equity ceiling) -->
+      <p class="text-xs text-(--muted) mt-5 mb-2">
+        Exit policy: at <strong>baseline + weekly goal</strong> in live equity, the bot closes all
+        positions and rests for the week. Per trade, once floating profit hits the target, the SL
+        ratchets to lock profit (min, or a fraction of the peak).
+      </p>
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <label class="block">
+          <span class="text-xs text-(--muted)">Profit-Lock Target ($)</span>
+          <input v-model.number="config.profit_lock_target" type="number" step="0.5" min="0"
+            class="w-full mt-1 px-3 py-2 rounded bg-(--bg) border border-(--border) text-(--text)" />
+        </label>
+        <label class="block">
+          <span class="text-xs text-(--muted)">Profit-Lock Min ($)</span>
+          <input v-model.number="config.profit_lock_min" type="number" step="0.5" min="0"
+            class="w-full mt-1 px-3 py-2 rounded bg-(--bg) border border-(--border) text-(--text)" />
+        </label>
+        <label class="block">
+          <span class="text-xs text-(--muted)">Profit-Lock Fraction</span>
+          <input v-model.number="config.profit_lock_fraction" type="number" step="0.05" min="0" max="1"
             class="w-full mt-1 px-3 py-2 rounded bg-(--bg) border border-(--border) text-(--text)" />
         </label>
         <label class="block flex items-center gap-2 pt-6">
@@ -299,7 +332,7 @@ const progressColor = (pct: number) => pct >= 100 ? 'var(--profit)' : pct >= 50 
         <span>Not offered by this broker (will be skipped): {{ missingActive.join(', ') }}</span>
       </div>
 
-      <div class="grid grid-cols-3 gap-2">
+      <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
         <label v-for="sym in preferredList" :key="sym"
           class="flex items-center gap-2 p-2 rounded bg-(--bg) cursor-pointer text-sm"
           :class="!isOffered(sym) ? 'opacity-50' : ''">
@@ -328,7 +361,7 @@ const progressColor = (pct: number) => pct >= 100 ? 'var(--profit)' : pct >= 50 
       </div>
 
       <!-- Add form -->
-      <div v-if="showAddAccount" class="mb-4 p-3 bg-(--bg) rounded grid grid-cols-2 gap-3">
+      <div v-if="showAddAccount" class="mb-4 p-3 bg-(--bg) rounded grid grid-cols-1 sm:grid-cols-2 gap-3">
         <input v-model="newAccount.name" placeholder="Name (e.g. IC Markets Demo)"
           class="px-3 py-2 rounded bg-(--card) border border-(--border) text-(--text) text-sm col-span-2" />
         <input v-model.number="newAccount.login" placeholder="Login" type="number"

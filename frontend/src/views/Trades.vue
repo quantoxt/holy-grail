@@ -19,7 +19,8 @@ onUnmounted(() => clearInterval(timer))
   <div class="space-y-4">
     <h2 class="text-xl font-semibold">Trades</h2>
     <div class="bg-(--card) border border-(--border) rounded-lg overflow-hidden">
-      <table class="w-full text-sm">
+      <div class="overflow-x-auto">
+      <table class="w-full text-sm min-w-[40rem]">
         <thead class="text-(--muted) border-b border-(--border)">
           <tr>
             <th class="text-left p-2">Time</th>
@@ -56,6 +57,7 @@ onUnmounted(() => clearInterval(timer))
           </tr>
         </tbody>
       </table>
+      </div>
     </div>
   </div>
 </template>

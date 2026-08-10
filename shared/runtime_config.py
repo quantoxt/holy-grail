@@ -26,11 +26,27 @@ class RuntimeConfig:
     withdraw_profit_weekly: bool = True # log profit as withdrawn at week boundary
 
     # --- risk guardrails ---
-    max_risk_per_trade: float = 1.0     # $1 per trade (2% of $50)
+    max_risk_per_trade: float = 1.0     # reference risk (actual is min-lot-bound, see below)
     max_daily_loss: float = 3.0         # $3 daily loss cap
     max_weekly_drawdown: float = 10.0   # stop if equity <= $40
     max_open_positions: int = 2         # limit correlated exposure
     sl_multiplier: float = 2.0          # SL = sl_multiplier × |predicted_move|
+
+    # --- min-lot risk reality (observed overnight 2026-08-10) ---
+    # Brokers floor lot to 0.01, so the $-at-SL is whatever min-lot dictates, NOT
+    # max_risk_per_trade. We accept that (scale to min-lot) but cap each trade's
+    # actual $-at-SL at risk_cap_pct of equity — refuse suicide, don't refuse trade.
+    risk_cap_pct: float = 0.03          # skip if actual $-at-SL > 3% of equity
+
+    # --- goal-aware exit (reverses the old "no TP" lock) ---
+    # Hard weekly ceiling: baseline + weekly_goal. Once LIVE EQUITY (incl. floating)
+    # reaches it, close ALL positions and stop for the week — bank the goal, don't
+    # give it back (a +$14 floating held to horizon became -$7 overnight).
+    # Per-trade: once floating profit >= profit_lock_target, ratchet SL to lock
+    # max(profit_lock_min, peak_profit × profit_lock_fraction) of the gain.
+    profit_lock_target: float = 5.0     # floating-$ at which profit-trailing engages
+    profit_lock_min: float = 2.0        # minimum $ profit locked once trailing on
+    profit_lock_fraction: float = 0.5   # lock this fraction of peak favorable $
 
     # --- dynamic adjustments ---
     thursday_aggression: bool = True    # boost risk to $1.50 on Thursday if behind
