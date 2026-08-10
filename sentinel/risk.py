@@ -45,6 +45,19 @@ class Sentinel:
         self.total_trades = 0
         self.wins = 0
 
+    def reset_for_new_account(self):
+        """Clear all P&L/streak tracking for a new active account. Called when the
+        bot hot-swaps to a different MT5 login — a new account starts at a clean
+        slate (no carryover of the prior account's wins/losses/goal progress)."""
+        self.weekly_pnl = 0.0
+        self.daily_pnl = 0.0
+        self.consecutive_losses = 0
+        self.total_trades = 0
+        self.wins = 0
+        self.weekly_goal_locked = False
+        self.last_day = None
+        self.last_week_start = None
+
     # ---- time resets ----
 
     def check_time_resets(self, current_date: date):

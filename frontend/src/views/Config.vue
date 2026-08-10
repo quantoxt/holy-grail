@@ -52,15 +52,18 @@ const fetchConfig = async () => {
 const fetchLive = async () => {
   try {
     const [{ data: acct }, { data: accts }, { data: trs }] = await Promise.all([
-      supabase.from('account_state').select('symbols,news_blackout,news_reason').order('updated_at', { ascending: false }).limit(1),
+      supabase.from('account_state').select('login,symbols,news_blackout,news_reason').order('updated_at', { ascending: false }).limit(1),
       supabase.from('mt5_accounts').select('*').order('created_at', { ascending: false }),
-      supabase.from('trades').select('result,pnl,exit_time').order('created_at', { ascending: false }).limit(500),
+      supabase.from('trades').select('result,pnl,exit_time,mt5_login').order('created_at', { ascending: false }).limit(500),
     ])
     const hb = (acct && acct[0]) || {}
     discovered.value = (hb.symbols || []) as string[]
     news.value = { blackout: !!hb.news_blackout, blackout_reason: hb.news_reason || '' }
     accounts.value = accts || []
-    weekly.value = computeWeekly(trs || [], Number(config.value.weekly_goal) || 14)
+    // scope weekly/performance to the active account
+    const login = hb && hb.login
+    const acctTrs = (trs || []).filter((t) => !login || Number(t.mt5_login) === Number(login))
+    weekly.value = computeWeekly(acctTrs, Number(config.value.weekly_goal) || 14)
   } catch {}
 }
 
