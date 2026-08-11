@@ -161,7 +161,7 @@ class Trader:
                     self.log(type="SKIP", symbol=sym, reason="not offered by broker")
                     continue
                 candles = await self.provider.get_candles(sym, settings.timeframe, settings.lookback + 5)
-                sig = self.engine.get_signal(candles)
+                sig = self.engine.get_signal(candles, sym)
                 signals[sym] = sig
                 try:
                     db.log_signal(sym, settings.timeframe, sig["direction"],

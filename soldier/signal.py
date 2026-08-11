@@ -28,9 +28,10 @@ class SignalEngine:
         self.pred_len = pred_len or settings.pred_len
         self.samples = sample_count or settings.sample_count
 
-    def get_signal(self, candles: pd.DataFrame) -> dict:
+    def get_signal(self, candles: pd.DataFrame, symbol: str | None = None) -> dict:
         """candles: OHLCV df (timestamps, open, high, low, close, volume, amount).
-        Returns the h=pred_len confident directional signal."""
+        Returns the h=pred_len confident directional signal. `symbol` selects a
+        per-instrument SL multiplier override (sl_atr_mults), falling back to the global."""
         df = candles.tail(self.lookback).copy()
         df["timestamps"] = pd.to_datetime(df["timestamps"])
         ctx = df[["open", "high", "low", "close", "volume", "amount"]]
@@ -58,16 +59,29 @@ class SignalEngine:
         vol = float(rets.std() * (self.pred_len ** 0.5)) if len(rets) > 5 else 0.0
         snr = abs(move) / vol if vol > 0 else 99.0
 
-        if move >= settings.confidence_threshold:
+        from shared.runtime_config import runtime
+
+        # Plausibility cap: reject "long-shot" magnitude forecasts. Kronos's magnitude is
+        # un-calibrated (crypto-scaled) → predicts 2-5% moves on instruments that move <1%.
+        # The edge is DIRECTIONAL only, so hard-HOLD anything implausibly large.
+        if abs(move) > runtime.max_move_pct:
+            direction = "HOLD"
+        elif move >= settings.confidence_threshold:
             direction = "BUY"
         elif move <= -settings.confidence_threshold:
             direction = "SELL"
         else:
             direction = "HOLD"
 
-        # hard SL price: sl_multiplier × |predicted_move| (wide safety net, not noise-killed)
-        from shared.runtime_config import runtime
-        sl_dist = abs(move) * runtime.sl_multiplier
+        # SL price: REALIZED-volatility-based (ATR-equivalent), NOT the predicted magnitude.
+        # vol = stdev of the horizon return (computed above). Decouples the stop from Kronos's
+        # magnitude error so the SL reflects how the instrument actually moves, not the forecast.
+        # SL price: REALIZED-volatility-based (ATR-equivalent), per-instrument multiplier.
+        # Volatile instruments (e.g. XAGUSD) get a tighter mult via sl_atr_mults so the stop
+        # fits the risk cap; others use the global sl_atr_mult.
+        _sl_mult = ((runtime.sl_atr_mults or {}).get(symbol, runtime.sl_atr_mult)
+                    if symbol else runtime.sl_atr_mult)
+        sl_dist = (_sl_mult * vol) if vol > 0 else (abs(move) * runtime.sl_multiplier)
         if direction == "BUY":
             sl_price = cur * (1 - sl_dist)
         elif direction == "SELL":

@@ -1,0 +1,16 @@
+{
+  "active": "demo",
+  "accounts": {
+    "demo": {
+      "login": ***REDACTED-LOGIN***,
+      "password": "***REDACTED***",
+      "server": "MetaQuotes-Demo"
+    },
+    "icmarkets_demo": {
+      "_comment": "example second account — fill in to use. Switch by setting 'active' above to this name.",
+      "login": 0,
+      "password": "",
+      "server": "ICMarketsSC-Demo"
+    }
+  }
+}

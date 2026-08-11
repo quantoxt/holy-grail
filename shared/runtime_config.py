@@ -30,7 +30,10 @@ class RuntimeConfig:
     max_daily_loss: float = 3.0         # $3 daily loss cap
     max_weekly_drawdown: float = 10.0   # stop if equity <= $40
     max_open_positions: int = 2         # limit correlated exposure
-    sl_multiplier: float = 2.0          # SL = sl_multiplier × |predicted_move|
+    sl_multiplier: float = 2.0          # fallback SL = sl_multiplier × |move| (only when vol=0)
+    sl_atr_mult: float = 2.0            # default SL = sl_atr_mult × realized horizon-vol (ATR-based)
+    sl_atr_mults: dict = field(default_factory=lambda: {"XAGUSD": 1.0})  # per-symbol overrides (tighter for volatile instruments so they fit the cap)
+    max_move_pct: float = 0.015         # plausibility cap: reject |predicted_move| > 1.5% (long-shots)
 
     # --- min-lot risk reality (observed overnight 2026-08-10) ---
     # Brokers floor lot to 0.01, so the $-at-SL is whatever min-lot dictates, NOT
