@@ -6,6 +6,7 @@ const perf = ref({ total_trades: 0, closed: 0, wins: 0, win_rate: 0, net_pnl: 0 
 const signals = ref<any[]>([])
 const trades = ref<any[]>([])
 const account = ref<any>({})
+const weekly = ref<any>({ weekly_pnl: 0, weekly_goal: 14, weekly_progress_pct: 0, daily_pnl: 0, total_trades: 0, win_rate: 0, consecutive_losses: 0 })
 const now = ref(Date.now())
 let timer: number
 
@@ -20,6 +21,30 @@ const heartbeatAge = computed(() => {
   return Number.isFinite(age) ? age : null
 })
 const botOnline = computed(() => heartbeatAge.value !== null && heartbeatAge.value < STALE_MS)
+
+const computeWeekly = (rows: any[], goal: number) => {
+  const closed = rows.filter((t) => t.result === 'win' || t.result === 'loss')
+  const now = new Date()
+  const weekStart = new Date(now); weekStart.setHours(0, 0, 0, 0); weekStart.setDate(now.getDate() - ((now.getDay() + 6) % 7))
+  const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0)
+  const inWeek = (t: any) => t.exit_time && new Date(t.exit_time) >= weekStart
+  const inDay = (t: any) => t.exit_time && new Date(t.exit_time) >= dayStart
+  const weeklyPnl = closed.filter(inWeek).reduce((s, t) => s + (Number(t.pnl) || 0), 0)
+  const wins = closed.filter((t) => t.result === 'win').length
+  // trailing losing streak from most recent closed
+  const byTime = [...closed].sort((a, b) => new Date(b.exit_time).getTime() - new Date(a.exit_time).getTime())
+  let streak = 0
+  for (const t of byTime) { if (t.result === 'loss') streak++; else break }
+  return {
+    weekly_pnl: weeklyPnl,
+    weekly_goal: goal,
+    weekly_progress_pct: goal > 0 ? (weeklyPnl / goal) * 100 : 0,
+    daily_pnl: closed.filter(inDay).reduce((s, t) => s + (Number(t.pnl) || 0), 0),
+    total_trades: closed.length,
+    win_rate: closed.length ? wins / closed.length : 0,
+    consecutive_losses: streak,
+  }
+}
 
 const fetchData = async () => {
   now.value = Date.now()
@@ -45,6 +70,9 @@ const fetchData = async () => {
       win_rate: closed.length ? wins / closed.length : 0,
       net_pnl: all.reduce((s, t) => s + (Number(t.pnl) || 0), 0),
     }
+    // Compute weekly goal progress for dashboard
+    const goal = Number(weekly.value.weekly_goal) || 14
+    weekly.value = computeWeekly(all, goal)
   } catch {}
 }
 const fmtAge = (ms: number) => ms < 60_000 ? `${Math.round(ms / 1000)}s ago` : `${Math.round(ms / 60_000)}m ago`
@@ -130,6 +158,27 @@ onUnmounted(() => clearInterval(timer))
 
       <div v-else class="text-center text-(--muted) text-sm py-6">
         Awaiting bot heartbeat — live balance, equity &amp; open positions appear here once the bot connects.
+      </div>
+    </div>
+
+    <!-- Weekly Goal Progress -->
+    <div class="bg-(--card) border border-(--border) rounded-lg p-4 md:p-5">
+      <h3 class="text-sm font-medium text-(--muted) uppercase mb-3">Weekly Goal</h3>
+      <div class="flex items-baseline gap-3 mb-2">
+        <span class="text-3xl font-bold" :class="(weekly.weekly_pnl ?? 0) >= 0 ? 'text-(--profit)' : 'text-(--loss)'">
+          ${{ (weekly.weekly_pnl ?? 0).toFixed(2) }}
+        </span>
+        <span class="text-(--muted)">/ ${{ (weekly.weekly_goal ?? 14).toFixed(2) }}</span>
+      </div>
+      <div class="w-full h-3 rounded-full bg-(--bg) overflow-hidden mb-3">
+        <div class="h-full rounded-full transition-all duration-500"
+          :style="{ width: Math.min(100, weekly.weekly_progress_pct ?? 0) + '%', background: (weekly.weekly_progress_pct ?? 0) >= 100 ? 'var(--profit)' : (weekly.weekly_progress_pct ?? 0) >= 50 ? 'var(--warning)' : 'var(--primary)' }" />
+      </div>
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+        <div><span class="text-(--muted)">Today</span><br>${{ (weekly.daily_pnl ?? 0).toFixed(2) }}</div>
+        <div><span class="text-(--muted)">Trades</span><br>{{ weekly.total_trades ?? 0 }}</div>
+        <div><span class="text-(--muted)">Win Rate</span><br>{{ ((weekly.win_rate ?? 0) * 100).toFixed(1) }}%</div>
+        <div><span class="text-(--muted)">Streak</span><br>{{ weekly.consecutive_losses ?? 0 }}</div>
       </div>
     </div>
 
