@@ -79,7 +79,9 @@ const fetchData = async () => {
     const fromHeartbeat = Number(account.value?.weekly_pnl)
     const computed = computeWeekly(all, goal)
     if (account.value?.weekly_pnl !== null && account.value?.weekly_pnl !== undefined && Number.isFinite(fromHeartbeat)) {
-      weekly.value = { ...computed, weekly_pnl: fromHeartbeat }
+      // progress follows the DISPLAYED number so the bar fills with it
+      weekly.value = { ...computed, weekly_pnl: fromHeartbeat,
+        weekly_progress_pct: goal > 0 ? (fromHeartbeat / goal) * 100 : 0 }
     } else {
       weekly.value = computed
     }

@@ -202,39 +202,20 @@ onMounted(() => {
 })
 onUnmounted(() => clearInterval(timer))
 
-const progressColor = (pct: number) => pct >= 100 ? 'var(--profit)' : pct >= 50 ? 'var(--warning)' : 'var(--primary)'
 </script>
 
 <template>
   <div class="space-y-6">
-    <!-- Weekly progress + controls -->
-    <div class="bg-(--card) border border-(--border) rounded-lg p-5">
-      <div class="flex items-center justify-between mb-3">
-        <h2 class="text-lg font-semibold">Weekly Goal</h2>
-        <div class="flex gap-2">
-          <button @click="control('start')" class="px-3 py-1 rounded text-sm font-medium"
-            :class="botState === 'running' ? 'bg-(--profit) text-black' : 'bg-(--card) border border-(--border)'">Start</button>
-          <button @click="control('pause')" class="px-3 py-1 rounded text-sm bg-(--card) border border-(--border)"
-            :class="botState === 'paused' ? 'text-(--warning)' : ''">Pause</button>
-          <button @click="control('stop')" class="px-3 py-1 rounded text-sm bg-(--card) border border-(--border)"
-            :class="botState === 'stopped' ? 'text-(--loss)' : ''">Stop</button>
-        </div>
-      </div>
-      <div class="flex items-baseline gap-3 mb-2">
-        <span class="text-3xl font-bold" :class="(weekly.weekly_pnl ?? 0) >= 0 ? 'text-(--profit)' : 'text-(--loss)'">
-          ${{ (weekly.weekly_pnl ?? 0).toFixed(2) }}
-        </span>
-        <span class="text-(--muted)">/ ${{ (weekly.weekly_goal ?? 14).toFixed(2) }}</span>
-      </div>
-      <div class="w-full h-3 rounded-full bg-(--bg) overflow-hidden mb-3">
-        <div class="h-full rounded-full transition-all duration-500"
-          :style="{ width: Math.min(100, weekly.weekly_progress_pct ?? 0) + '%', background: progressColor(weekly.weekly_progress_pct ?? 0) }" />
-      </div>
-      <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-        <div><span class="text-(--muted)">Today</span><br>${{ (weekly.daily_pnl ?? 0).toFixed(2) }}</div>
-        <div><span class="text-(--muted)">Trades</span><br>{{ weekly.total_trades ?? 0 }}</div>
-        <div><span class="text-(--muted)">Win Rate</span><br>{{ ((weekly.win_rate ?? 0) * 100).toFixed(1) }}%</div>
-        <div><span class="text-(--muted)">Streak</span><br>{{ weekly.consecutive_losses ?? 0 }}</div>
+    <!-- Bot controls (weekly progress card lives on the Dashboard tab) -->
+    <div class="bg-(--card) border border-(--border) rounded-lg p-4 flex items-center justify-between">
+      <h2 class="text-lg font-semibold">Bot</h2>
+      <div class="flex gap-2">
+        <button @click="control('start')" class="px-3 py-1 rounded text-sm font-medium"
+          :class="botState === 'running' ? 'bg-(--profit) text-black' : 'bg-(--card) border border-(--border)'">Start</button>
+        <button @click="control('pause')" class="px-3 py-1 rounded text-sm bg-(--card) border border-(--border)"
+          :class="botState === 'paused' ? 'text-(--warning)' : ''">Pause</button>
+        <button @click="control('stop')" class="px-3 py-1 rounded text-sm bg-(--card) border border-(--border)"
+          :class="botState === 'stopped' ? 'text-(--loss)' : ''">Stop</button>
       </div>
     </div>
 
