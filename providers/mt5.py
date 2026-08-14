@@ -270,6 +270,26 @@ class MT5Provider(MarketProvider):
             return None
         return None
 
+    def realized_since(self, ts):
+        """Broker-truth realized P&L (profit + commission + swap) for OUR magic's
+        deals since timestamp `ts` (epoch seconds). Sums both IN (commission on
+        entry) and OUT deals. Returns None if history is unavailable. This is the
+        number the dashboard's weekly card should show — recomputing from the
+        trades table drifts (price-diff estimates miss swap/commission)."""
+        try:
+            from datetime import datetime, timezone
+            deals = mt5.history_deals_get(datetime.fromtimestamp(ts, timezone.utc),
+                                          datetime.now(timezone.utc))
+            total = 0.0
+            for d in (deals or []):
+                if getattr(d, "magic", 0) != MAGIC or d.time < ts:
+                    continue
+                total += float(d.profit) + float(getattr(d, "commission", 0.0)) \
+                    + float(getattr(d, "swap", 0.0))
+            return round(total, 2)
+        except Exception:
+            return None
+
     def modify_sl(self, position_ticket, new_sl) -> bool:
         """Tighten a position's stop-loss (breakeven trail). Returns True on success."""
         try:

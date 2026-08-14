@@ -106,5 +106,6 @@ P&L: $+0.62 (WIN ✅)
 Balance: $514.87
 Weekly P&L: $12.23 / $14.00
 
-From my observation, trades with confidence below 50% seem to close at a loss after the 2hrs elapses. If this is valid, then it will be solid to filter out trades whose confidence levels are low.
+From my observation, trades with confidence below 50% seem to close at a loss after the 2hrs elapses. If this is valid, then it will be good to filter out trades whose confidence levels are low.
 
+Minor Tweak, the account balance shows 514.87 but the weekly goal card shows 12.57/14 - I want that gap fixed. Clean accuracy all round

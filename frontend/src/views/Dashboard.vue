@@ -70,9 +70,19 @@ const fetchData = async () => {
       win_rate: closed.length ? wins / closed.length : 0,
       net_pnl: all.reduce((s, t) => s + (Number(t.pnl) || 0), 0),
     }
-    // Compute weekly goal progress for dashboard
+    // Compute weekly goal progress for dashboard. Prefer the bot's broker-truth
+    // weekly_pnl (deal history since Monday, incl. swap/commission) from the
+    // heartbeat; fall back to trades-table recomputation when the bot hasn't
+    // written it yet. The recomputed number drifts from the balance — that was
+    // the "514.87 balance vs 12.57/14 card" gap.
     const goal = Number(weekly.value.weekly_goal) || 14
-    weekly.value = computeWeekly(all, goal)
+    const fromHeartbeat = Number(account.value?.weekly_pnl)
+    const computed = computeWeekly(all, goal)
+    if (account.value?.weekly_pnl !== null && account.value?.weekly_pnl !== undefined && Number.isFinite(fromHeartbeat)) {
+      weekly.value = { ...computed, weekly_pnl: fromHeartbeat }
+    } else {
+      weekly.value = computed
+    }
   } catch {}
 }
 const fmtAge = (ms: number) => ms < 60_000 ? `${Math.round(ms / 1000)}s ago` : `${Math.round(ms / 60_000)}m ago`

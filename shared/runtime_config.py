@@ -34,6 +34,8 @@ class RuntimeConfig:
     sl_atr_mult: float = 2.0            # default SL = sl_atr_mult × realized horizon-vol (ATR-based)
     sl_atr_mults: dict = field(default_factory=lambda: {"XAGUSD": 1.0})  # per-symbol overrides (tighter for volatile instruments so they fit the cap)
     max_move_pct: float = 0.015         # plausibility cap: reject |predicted_move| > 1.5% (long-shots)
+    min_confidence: float = 0.50        # skip signals below this confidence (observed: sub-50% trades lose)
+    tp_at_predicted: bool = True        # take profit when price reaches the predicted close (path-dependency fix)
 
     # --- min-lot risk reality (observed overnight 2026-08-10) ---
     # Brokers floor lot to 0.01, so the $-at-SL is whatever min-lot dictates, NOT

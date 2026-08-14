@@ -182,8 +182,10 @@ class Trader:
                 self.log(type="ERROR", symbol=sym, msg=str(e))
 
         # Phase 4: Rank by |predicted_move| (descending), filter HOLDs + already-open
+        # + low-confidence (observed 2026-08-10: sub-50% confidence trades closed at a loss)
         tradeable = {sym: sig for sym, sig in signals.items()
-                     if sig["direction"] != "HOLD" and sym not in self.open}
+                     if sig["direction"] != "HOLD" and sym not in self.open
+                     and sig["confidence"] >= runtime.min_confidence}
         ranked = sorted(tradeable.items(), key=lambda x: abs(x[1]["predicted_move"]), reverse=True)
 
         # Phase 5: Open positions (best first, up to max_open_positions)
@@ -282,6 +284,7 @@ class Trader:
                 "contract_size": spec["contract_size"],
                 "ticket": ticket, "trade_id": None, "sl_price": sig["sl_price"],
                 "move": sig["predicted_move"],
+                "target_price": sig["predicted_close"],   # predicted-level TP
                 "actual_risk": actual_risk, "peak_profit": 0.0,
             }
             try:
@@ -490,6 +493,25 @@ class Trader:
             except Exception as e:
                 self.log(type="TRAIL_ERR", symbol=sym, msg=str(e))
 
+    async def _maybe_take_targets(self, broker_positions):
+        """Predicted-level take-profit: when live price reaches Kronos's predicted
+        close, the forecast has played out — take the profit rather than holding to
+        the h=24 horizon. Fixes path dependency (a winner can reverse to SL before
+        horizon) and frees the slot for the next signal. Recovered positions have
+        no stored target and are simply skipped."""
+        if not runtime.tp_at_predicted or not self.open:
+            return
+        by_sym = {p["symbol"]: p for p in broker_positions}
+        for sym, pos in list(self.open.items()):
+            target = pos.get("target_price")
+            bp = by_sym.get(sym)
+            cur = bp.get("price_current") if bp else None
+            if not target or not cur:
+                continue
+            hit = cur >= target if pos["direction"] == "BUY" else cur <= target
+            if hit:
+                await self._close_position(sym, pos, exit_price=cur, reason="target")
+
     async def _maybe_bank_goal(self, equity, floating):
         """If the weekly goal is reached in equity (incl. floating) or realized+
         floating PnL, close ALL positions and latch the stop for the week. Called
@@ -533,10 +555,24 @@ class Trader:
                 # (SL hit / manual close / crash mid-close) so trades don't stick at 'open'
                 await self._reconcile_closed({p["ticket"] for p in positions})
                 floating = round(sum(p.get("profit", 0) for p in positions), 2)
-                # goal/ceiling bank (5s reaction) — else manage per-position exits
+                # goal/ceiling bank (5s reaction), predicted-level TP, then trails
                 await self._maybe_bank_goal(acct["equity"], floating)
+                await self._maybe_take_targets(positions)
+                positions = await self.provider.get_open_positions()  # refresh post-close
                 self._manage_exits(positions)
                 syms = self.provider.discover_symbols(force=(tick % sym_refresh_every == 0))
+                # broker-truth weekly P&L (deal history since Monday 00:00 UTC) for the
+                # dashboard card — trades-table recomputation drifts from the balance
+                weekly_pnl = None
+                if hasattr(self.provider, "realized_since"):
+                    try:
+                        now_d = datetime.now(timezone.utc)
+                        wk = now_d.date()
+                        wk = wk.fromordinal(wk.toordinal() - wk.weekday())   # Monday 00:00
+                        weekly_pnl = self.provider.realized_since(
+                            datetime(wk.year, wk.month, wk.day, tzinfo=timezone.utc).timestamp())
+                    except Exception:
+                        weekly_pnl = None
                 # news blackout — published so the dashboard can show a banner
                 blackout, reason = (False, "")
                 try:
@@ -549,7 +585,7 @@ class Trader:
                 db.upsert_account_state(
                     acct["login"], acct["broker"], acct["balance"], acct["equity"],
                     acct["currency"], floating, positions, syms,
-                    news_blackout=blackout, news_reason=reason)
+                    news_blackout=blackout, news_reason=reason, weekly_pnl=weekly_pnl)
             except Exception as e:
                 self.log(type="TELEMETRY_ERR", msg=str(e))
 

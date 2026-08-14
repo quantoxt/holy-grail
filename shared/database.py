@@ -93,10 +93,11 @@ class DBLogger:
     # --- account state (live heartbeat — bot writes, dashboard reads) ---
     def upsert_account_state(self, login, broker, balance, equity, currency,
                              floating_pnl, open_positions, symbols,
-                             news_blackout=False, news_reason=""):
+                             news_blackout=False, news_reason="", weekly_pnl=None):
         """Upsert one row per MT5 login. Written by the bot's ~5s telemetry task;
-        read directly by the Vercel dashboard."""
-        self.client.table("account_state").upsert({
+        read directly by the Vercel dashboard. weekly_pnl is broker-realized
+        (deal-history truth, incl. swap/commission) since week start when available."""
+        row = {
             "login": login, "broker": broker,
             "balance": balance, "equity": equity, "currency": currency,
             "floating_pnl": floating_pnl,
@@ -105,7 +106,10 @@ class DBLogger:
             "news_blackout": bool(news_blackout),
             "news_reason": news_reason or "",
             "updated_at": datetime.now(timezone.utc).isoformat(),
-        }, on_conflict="login").execute()
+        }
+        if weekly_pnl is not None:
+            row["weekly_pnl"] = weekly_pnl
+        self.client.table("account_state").upsert(row, on_conflict="login").execute()
 
 
 db = DBLogger()
