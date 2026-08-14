@@ -68,7 +68,11 @@ const fetchData = async () => {
       closed: closed.length,
       wins,
       win_rate: closed.length ? wins / closed.length : 0,
-      net_pnl: all.reduce((s, t) => s + (Number(t.pnl) || 0), 0),
+      // broker-truth realized (deal history incl. swap/commission) from the
+      // heartbeat; falls back to the trades-table estimate
+      net_pnl: Number.isFinite(Number(account.value?.realized_pnl))
+        ? Number(account.value.realized_pnl)
+        : all.reduce((s, t) => s + (Number(t.pnl) || 0), 0),
     }
     // Compute weekly goal progress for dashboard. Prefer the bot's broker-truth
     // weekly_pnl (deal history since Monday, incl. swap/commission) from the

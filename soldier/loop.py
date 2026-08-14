@@ -573,6 +573,13 @@ class Trader:
                             datetime(wk.year, wk.month, wk.day, tzinfo=timezone.utc).timestamp())
                     except Exception:
                         weekly_pnl = None
+                # all-time realized (Net P&L card) — refresh less often, it's stable
+                realized_pnl = None
+                if hasattr(self.provider, "realized_since") and tick % sym_refresh_every == 1:
+                    try:
+                        realized_pnl = self.provider.realized_since(0)
+                    except Exception:
+                        realized_pnl = None
                 # news blackout — published so the dashboard can show a banner
                 blackout, reason = (False, "")
                 try:
@@ -585,7 +592,8 @@ class Trader:
                 db.upsert_account_state(
                     acct["login"], acct["broker"], acct["balance"], acct["equity"],
                     acct["currency"], floating, positions, syms,
-                    news_blackout=blackout, news_reason=reason, weekly_pnl=weekly_pnl)
+                    news_blackout=blackout, news_reason=reason, weekly_pnl=weekly_pnl,
+                    realized_pnl=realized_pnl)
             except Exception as e:
                 self.log(type="TELEMETRY_ERR", msg=str(e))
 
@@ -612,9 +620,36 @@ class Trader:
         except Exception as e:
             self.log(type="ERROR", msg=f"account switch failed: {e}")
 
+    def _reload_pnl_from_broker(self):
+        """Seed Sentinel's in-memory weekly/daily P&L from the broker's deal history
+        so a restart doesn't zero them (a restarted bot used to think the week was
+        $0 and mislabel the equity-ceiling kill as 'weekly_goal_hit ($0.00 >= ...)').
+        Best-effort: on any failure the old zero-start behavior applies."""
+        if not hasattr(self.provider, "realized_since"):
+            return
+        try:
+            now_d = datetime.now(timezone.utc)
+            d = now_d.date()
+            monday = d.fromordinal(d.toordinal() - d.weekday())
+            wk = self.provider.realized_since(
+                datetime(monday.year, monday.month, monday.day, tzinfo=timezone.utc).timestamp())
+            if wk is not None:
+                self.sentinel.weekly_pnl = wk
+            dy = self.provider.realized_since(
+                datetime(d.year, d.month, d.day, tzinfo=timezone.utc).timestamp())
+            if dy is not None:
+                self.sentinel.daily_pnl = dy
+            self.sentinel.last_day = d
+            self.sentinel.last_week_start = monday
+            self.log(type="RELOAD_PNL", weekly=f"${self.sentinel.weekly_pnl:.2f}",
+                     daily=f"${self.sentinel.daily_pnl:.2f}", msg="seeded from broker deal history")
+        except Exception as e:
+            self.log(type="RELOAD_PNL_ERR", msg=str(e))
+
     async def run(self, cycles=None, interval_sec=300):
         runtime.refresh()   # boot from the dashboard's last-saved config, not code defaults
         await self._reconcile_positions()   # never orphan an open trade across restarts
+        self._reload_pnl_from_broker()      # restart must not zero weekly/daily P&L
         c = 0
         telemetry = asyncio.create_task(self._telemetry())
         try:

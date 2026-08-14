@@ -102,11 +102,27 @@ class Sentinel:
             return True, "bot_stopped", False
         if self.cfg.trading_paused:
             return True, "paused", False
+        ceiling = self.cfg.baseline_equity + self.cfg.weekly_goal
+        # goal banked earlier, profit since WITHDRAWN (equity back to baseline,
+        # nothing open) → resume trading with a fresh weekly slate. This is the
+        # "hit $14 on Monday, withdraw, keep going Tuesday" flow: the weekly goal
+        # stays $14/wk — banking early just starts the next attempt sooner.
+        if (self.weekly_goal_locked and open_positions == 0
+                and equity < ceiling - 0.01):
+            if self.cfg.withdraw_profit_weekly and self.weekly_pnl > 0:
+                self.weekly_withdrawn += self.weekly_pnl
+            self.weekly_pnl = 0.0
+            self.daily_pnl = 0.0
+            self.weekly_goal_locked = False
         # weekly goal — realized OR floating (in-flight profit counts)
         if self.weekly_goal_locked or (self.weekly_pnl + floating_pnl) >= self.cfg.weekly_goal:
+            newly = not self.weekly_goal_locked
             self.weekly_goal_locked = True
-            return (True, f"weekly_goal_hit (${self.weekly_pnl + floating_pnl:.2f} "
-                    f">= ${self.cfg.weekly_goal:.2f})", True)
+            if newly:
+                return (True, f"weekly_goal_hit (${self.weekly_pnl + floating_pnl:.2f} "
+                        f">= ${self.cfg.weekly_goal:.2f})", True)
+            # steady-state label while resting (don't reprint a stale threshold)
+            return True, "weekly_goal_banked (resume: withdraw profit or Monday)", False
         # hard equity ceiling: baseline + goal reached → bank everything, stop for the week
         ceiling = self.cfg.baseline_equity + self.cfg.weekly_goal
         if equity >= ceiling:

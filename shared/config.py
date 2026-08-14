@@ -43,7 +43,7 @@ class Settings:
     kronos_path: str = field(default_factory=lambda: _env("KRONOS_PATH", str(ROOT / "model" / "Kronos")))
     lookback: int = 512
     pred_len: int = 24          # the validated directional edge (h=24)
-    sample_count: int = 1       # CPU-safe on the VPS
+    sample_count: int = 5       # N sampled paths, averaged inside Kronos (variance reduction)
     confidence_threshold: float = 0.003   # |predicted_move| >= 0.3% to trade (55% slice)
 
     # --- execution guards (spread / volatility / trailing) ---
