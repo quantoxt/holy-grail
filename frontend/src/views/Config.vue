@@ -13,7 +13,6 @@ const CONFIG_DEFAULTS: Record<string, any> = {
   sl_multiplier: 2.0,
   max_open_positions: 2,
 }
-const weekly = ref<any>({ weekly_pnl: 0, weekly_goal: 14, weekly_progress_pct: 0, daily_pnl: 0, total_trades: 0, win_rate: 0, consecutive_losses: 0 })
 const accounts = ref<any[]>([])
 const botState = ref('running')
 const news = ref<any>({})  // blackout banner — populated when the bot publishes it; {} = hidden
@@ -47,49 +46,19 @@ const fetchConfig = async () => {
 }
 
 // Live stats only — does NOT touch the editable form fields, so polling never
-// wipes unsaved edits. Reads accounts, the bot heartbeat (discovered symbols),
-// and computes weekly/performance client-side from the trades audit table.
+// wipes unsaved edits. Reads accounts + the bot heartbeat (discovered symbols,
+// news banner). (Weekly card lives on the Dashboard tab, from the heartbeat.)
 const fetchLive = async () => {
   try {
-    const [{ data: acct }, { data: accts }, { data: trs }] = await Promise.all([
+    const [{ data: acct }, { data: accts }] = await Promise.all([
       supabase.from('account_state').select('login,symbols,news_blackout,news_reason').order('updated_at', { ascending: false }).limit(1),
       supabase.from('mt5_accounts').select('*').order('created_at', { ascending: false }),
-      supabase.from('trades').select('result,pnl,exit_time,mt5_login').order('created_at', { ascending: false }).limit(500),
     ])
     const hb = (acct && acct[0]) || {}
     discovered.value = (hb.symbols || []) as string[]
     news.value = { blackout: !!hb.news_blackout, blackout_reason: hb.news_reason || '' }
     accounts.value = accts || []
-    // scope weekly/performance to the active account
-    const login = hb && hb.login
-    const acctTrs = (trs || []).filter((t) => !login || Number(t.mt5_login) === Number(login))
-    weekly.value = computeWeekly(acctTrs, Number(config.value.weekly_goal) || 14)
   } catch {}
-}
-
-// Weekly goal progress + performance, computed client-side (Monday-start week).
-const computeWeekly = (rows: any[], goal: number) => {
-  const closed = rows.filter((t) => t.result === 'win' || t.result === 'loss')
-  const now = new Date()
-  const weekStart = new Date(now); weekStart.setHours(0, 0, 0, 0); weekStart.setDate(now.getDate() - ((now.getDay() + 6) % 7))
-  const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0)
-  const inWeek = (t: any) => t.exit_time && new Date(t.exit_time) >= weekStart
-  const inDay = (t: any) => t.exit_time && new Date(t.exit_time) >= dayStart
-  const weeklyPnl = closed.filter(inWeek).reduce((s, t) => s + (Number(t.pnl) || 0), 0)
-  const wins = closed.filter((t) => t.result === 'win').length
-  // trailing losing streak from most recent closed
-  const byTime = [...closed].sort((a, b) => new Date(b.exit_time).getTime() - new Date(a.exit_time).getTime())
-  let streak = 0
-  for (const t of byTime) { if (t.result === 'loss') streak++; else break }
-  return {
-    weekly_pnl: weeklyPnl,
-    weekly_goal: goal,
-    weekly_progress_pct: goal > 0 ? (weeklyPnl / goal) * 100 : 0,
-    daily_pnl: closed.filter(inDay).reduce((s, t) => s + (Number(t.pnl) || 0), 0),
-    total_trades: closed.length,
-    win_rate: closed.length ? wins / closed.length : 0,
-    consecutive_losses: streak,
-  }
 }
 
 const save = async () => {

@@ -25,8 +25,9 @@ const botOnline = computed(() => heartbeatAge.value !== null && heartbeatAge.val
 const computeWeekly = (rows: any[], goal: number) => {
   const closed = rows.filter((t) => t.result === 'win' || t.result === 'loss')
   const now = new Date()
-  const weekStart = new Date(now); weekStart.setHours(0, 0, 0, 0); weekStart.setDate(now.getDate() - ((now.getDay() + 6) % 7))
-  const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0)
+  // UTC boundaries — matches the bot's Monday-00:00-UTC reset (no local drift)
+  const weekStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - ((now.getUTCDay() + 6) % 7)))
+  const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
   const inWeek = (t: any) => t.exit_time && new Date(t.exit_time) >= weekStart
   const inDay = (t: any) => t.exit_time && new Date(t.exit_time) >= dayStart
   const weeklyPnl = closed.filter(inWeek).reduce((s, t) => s + (Number(t.pnl) || 0), 0)

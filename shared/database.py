@@ -5,7 +5,7 @@ prediction, signal, trade, and risk event flows here. Central audit trail — th
 FastAPI backend and dashboard read from these same tables.
 """
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from supabase import create_client
 
@@ -81,6 +81,52 @@ class DBLogger:
             "exit_price": exit_price, "pnl": pnl, "result": result,
             "exit_time": datetime.now(timezone.utc).isoformat(),
         }).eq("id", trade_id).execute()
+
+    # --- prediction evaluations (the measurement loop) ---
+    def log_evaluation(self, symbol, timeframe, direction, predicted_move,
+                       predicted_close, current_close, confidence, snr,
+                       sample_count, horizon_min):
+        """One row per prediction (traded OR skipped — the shadow record is the point).
+        Resolved later against the actual close at due_time."""
+        now = datetime.now(timezone.utc)
+        self.client.table("prediction_evaluations").insert({
+            "symbol": symbol, "timeframe": timeframe,
+            "signal_time": now.isoformat(),
+            "due_time": (now + timedelta(minutes=horizon_min)).isoformat(),
+            "direction": direction,
+            "predicted_move": predicted_move, "predicted_close": predicted_close,
+            "current_close": current_close,
+            "confidence": confidence, "snr": snr, "sample_count": sample_count,
+        }).execute()
+
+    def due_evaluations(self, limit=15):
+        """Matured-but-unresolved evaluations (due_time passed)."""
+        r = self.client.table("prediction_evaluations").select("*") \
+            .is_("outcome", "null").lte("due_time", datetime.now(timezone.utc).isoformat()) \
+            .order("due_time").limit(limit).execute()
+        return r.data or []
+
+    def resolve_evaluation(self, eval_id, outcome, actual_close, actual_move):
+        self.client.table("prediction_evaluations").update({
+            "outcome": outcome, "actual_close": actual_close,
+            "actual_move": actual_move,
+            "resolved_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("id", eval_id).execute()
+
+    def recent_resolved_evaluations(self, limit=20, direction_only=True):
+        """Most recent resolved evaluations, newest first (feeds the Watcher)."""
+        q = self.client.table("prediction_evaluations") \
+            .select("direction,outcome").in_("outcome", ["hit", "miss"]) \
+            .order("resolved_at", desc=True).limit(limit)
+        if direction_only:
+            q = q.neq("direction", "HOLD")
+        return q.execute().data or []
+
+    def prune_predictions(self, days=7):
+        """Drop raw kronos_predictions older than N days (24-candle JSON per
+        symbol per 5-min cycle bloats fast; evaluations keep the stats)."""
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        self.client.table("kronos_predictions").lt("created_at", cutoff.isoformat()).delete().execute()
 
     # --- risk events (Sentinel) ---
     def log_risk_event(self, event_type, reason, data=None, lot_before=None, lot_after=None):

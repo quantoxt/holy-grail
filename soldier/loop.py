@@ -37,7 +37,7 @@ from soldier.signal import SignalEngine  # noqa: E402
 from watcher.regime import Watcher  # noqa: E402
 from sentinel.risk import sentinel as sentinel_inst  # noqa: E402
 
-LOG = ROOT / "data" / "paper_log.jsonl"
+LOG = ROOT / "data" / "bot_log.jsonl"   # was paper_log.jsonl — this is the LIVE audit log
 CYCLE_SEC = 300   # --interval default; used to age reconciled positions
 
 
@@ -150,36 +150,15 @@ class Trader:
                                   {"balance": bal, "equity": equity, "floating": floating})
             except Exception:
                 pass
+            # Shadow measurement: a latched week (goal banked / blackout / stopped)
+            # is exactly when the CPU is idle — keep scoring predictions so the
+            # per-symbol accuracy data accumulates even without trading.
+            if runtime.bot_running and not runtime.trading_paused:
+                await self._scan_signals()
             return
 
         # Phase 3: Scan ALL symbols for signals
-        signals = {}
-        for sym in runtime.active_symbols:
-            try:
-                # Graceful skip: ignore active symbols the logged-in broker doesn't offer
-                if hasattr(self.provider, "is_offered") and not self.provider.is_offered(sym):
-                    self.log(type="SKIP", symbol=sym, reason="not offered by broker")
-                    continue
-                candles = await self.provider.get_candles(sym, settings.timeframe, settings.lookback + 5)
-                sig = self.engine.get_signal(candles, sym)
-                signals[sym] = sig
-                try:
-                    db.log_signal(sym, settings.timeframe, sig["direction"],
-                                  sig["confidence"], sig["predicted_move"],
-                                  sig["current_close"], sig["predicted_close"], sig["horizon"])
-                except Exception:
-                    pass
-                try:
-                    db.log_prediction(sym, settings.timeframe, sig["candle_time"],
-                                      sig["predictions"], sig["predicted_close"],
-                                      "UP" if sig["predicted_move"] > 0 else "DOWN",
-                                      abs(sig["predicted_move"]),
-                                      sig["lookback"], sig["pred_len"],
-                                      sig["sample_count"], sig["inference_ms"])
-                except Exception:
-                    pass
-            except Exception as e:
-                self.log(type="ERROR", symbol=sym, msg=str(e))
+        signals = await self._scan_signals()
 
         # Phase 4: Rank by |predicted_move| (descending), filter HOLDs + already-open
         # + low-confidence (observed 2026-08-10: sub-50% confidence trades closed at a loss)
@@ -316,6 +295,48 @@ class Trader:
                  holds=len(holds), bal=bal, equity=equity,
                  weekly_pnl=f"${self.sentinel.weekly_pnl:.2f}")
 
+    async def _scan_signals(self) -> dict:
+        """Phase 3: run Kronos over every active symbol, log signals/predictions/
+        evaluations. Returns {symbol: signal}. Used by the trade cycle AND by the
+        latched-week shadow measurement (scoring predictions needs no trading)."""
+        signals = {}
+        for sym in runtime.active_symbols:
+            try:
+                # Graceful skip: ignore active symbols the logged-in broker doesn't offer
+                if hasattr(self.provider, "is_offered") and not self.provider.is_offered(sym):
+                    self.log(type="SKIP", symbol=sym, reason="not offered by broker")
+                    continue
+                candles = await self.provider.get_candles(sym, settings.timeframe, settings.lookback + 5)
+                sig = self.engine.get_signal(candles, sym)
+                signals[sym] = sig
+                try:
+                    db.log_signal(sym, settings.timeframe, sig["direction"],
+                                  sig["confidence"], sig["predicted_move"],
+                                  sig["current_close"], sig["predicted_close"], sig["horizon"])
+                except Exception:
+                    pass
+                try:
+                    db.log_prediction(sym, settings.timeframe, sig["candle_time"],
+                                      sig["predictions"], sig["predicted_close"],
+                                      "UP" if sig["predicted_move"] > 0 else "DOWN",
+                                      abs(sig["predicted_move"]),
+                                      sig["lookback"], sig["pred_len"],
+                                      sig["sample_count"], sig["inference_ms"])
+                except Exception:
+                    pass
+                # measurement loop: score EVERY prediction (traded or not) later
+                try:
+                    db.log_evaluation(sym, settings.timeframe, sig["direction"],
+                                      sig["predicted_move"], sig["predicted_close"],
+                                      sig["current_close"], sig["confidence"],
+                                      sig["snr"], sig["sample_count"],
+                                      horizon_min=settings.pred_len * 5)
+                except Exception:
+                    pass
+            except Exception as e:
+                self.log(type="ERROR", symbol=sym, msg=str(e))
+        return signals
+
     async def _resolve_positions(self):
         """Close positions whose h=pred_len horizon has elapsed."""
         for sym, pos in list(self.open.items()):
@@ -347,6 +368,16 @@ class Trader:
                 await self.provider.close_position(pos["ticket"])
             except Exception as e:
                 self.log(type="ERROR", msg=f"close failed {sym}: {e}")
+            # broker-truth P&L from the closing deal (incl. swap/commission);
+            # falls back to the estimate if the deal can't be found yet
+            if hasattr(self.provider, "get_closed_deal"):
+                try:
+                    deal = self.provider.get_closed_deal(pos["ticket"])
+                    if deal:
+                        pnl, exit_price = deal["pnl"], deal["price"]
+                        correct = pnl > 0
+                except Exception:
+                    pass
 
         self.sentinel.on_trade_closed(pnl, correct)
         self.watcher.record_resolution(correct)
@@ -542,6 +573,8 @@ class Trader:
         account switch, bank the weekly goal if reached, manage exits (profit/breakeven
         trail), then publish live balance / equity / floating PnL / positions / symbols."""
         sym_refresh_every = 6   # refresh broker symbol list every 6th tick (~30s)
+        eval_every = 12         # resolve matured predictions every ~60s
+        last_prune_day = None   # prune kronos_predictions once per UTC day
         tick = 0
         while True:
             try:
@@ -549,6 +582,15 @@ class Trader:
                 tick += 1
                 runtime.refresh()                                   # hot-reload dashboard edits
                 await self._maybe_switch_account()                  # dashboard-driven swap
+                if tick % eval_every == 0:
+                    await self._resolve_evaluations()               # score matured predictions
+                today = datetime.now(timezone.utc).date()
+                if last_prune_day != today:
+                    last_prune_day = today
+                    try:
+                        db.prune_predictions(days=7)
+                    except Exception:
+                        pass
                 acct = await self.provider.account_summary()
                 positions = await self.provider.get_open_positions()
                 # log closes for any tracked position the broker no longer has
@@ -646,10 +688,58 @@ class Trader:
         except Exception as e:
             self.log(type="RELOAD_PNL_ERR", msg=str(e))
 
+    async def _resolve_evaluations(self):
+        """Score matured predictions against the actual close at due_time — ALL
+        predictions, traded or not. This is the measurement loop: per-symbol
+        accuracy, N-sample comparison, and confidence calibration all come from
+        the prediction_evaluations table. Also feeds the Watcher's drift check."""
+        import pandas as pd
+        try:
+            rows = db.due_evaluations(15)
+        except Exception:
+            return
+        for r in rows:
+            try:
+                candles = await self.provider.get_candles(r["symbol"], settings.timeframe, 48)
+                ts = pd.to_datetime(candles["timestamps"])
+                due = pd.Timestamp(r["due_time"])
+                due = due.tz_convert("UTC").tz_localize(None) if due.tzinfo else due
+                idx = int(ts.searchsorted(due))
+                if idx >= len(candles):
+                    continue   # candle not available yet; retry next pass
+                actual = float(candles["close"].iloc[idx])
+                base = float(r["current_close"] or 0) or actual
+                actual_move = (actual - base) / base
+                if actual_move == 0:
+                    outcome = "flat"
+                elif (actual_move > 0) == ((r["predicted_move"] or 0) > 0):
+                    outcome = "hit"
+                else:
+                    outcome = "miss"
+                db.resolve_evaluation(r["id"], outcome, actual, actual_move)
+                if r["direction"] != "HOLD":
+                    self.watcher.record_resolution(outcome == "hit")
+            except Exception as e:
+                self.log(type="EVAL_ERR", symbol=r.get("symbol"), msg=str(e))
+
+    def _seed_watcher(self):
+        """Bootstrap the drift window from resolved evaluations so a restart no
+        longer wipes Layer 2 back to warmup (it was effectively dead in prod)."""
+        try:
+            rows = db.recent_resolved_evaluations(limit=20)
+            for r in reversed(rows):   # oldest → newest
+                self.watcher.record_resolution(r["outcome"] == "hit")
+            if rows:
+                self.log(type="WATCHER", msg=f"seeded rolling accuracy "
+                         f"{self.watcher.rolling_accuracy:.0%} from {len(rows)} evaluations")
+        except Exception:
+            pass
+
     async def run(self, cycles=None, interval_sec=300):
         runtime.refresh()   # boot from the dashboard's last-saved config, not code defaults
         await self._reconcile_positions()   # never orphan an open trade across restarts
         self._reload_pnl_from_broker()      # restart must not zero weekly/daily P&L
+        self._seed_watcher()                # drift window survives restarts too
         c = 0
         telemetry = asyncio.create_task(self._telemetry())
         try:
