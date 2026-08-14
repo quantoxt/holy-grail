@@ -18,7 +18,7 @@ soldier/       Layer 1 — SignalEngine (Kronos inference) + loop.py (trading lo
 watcher/       Layer 2 — confidence gate + rolling-accuracy drift kill switch
 sentinel/      Layer 3 — goal-driven risk manager (Sentinel v2: weekly goal, equity floor, lot sizing)
 shared/        config.py (Settings) + runtime_config.py (Supabase-backed, dashboard-adjustable) + database.py (Supabase) + telegram.py
-api/           FastAPI backend (REST + control endpoints + /api/account + /api/symbols)
+(no api/ layer — the Vercel dashboard reads/writes Supabase directly via RPC; deleted 2026-08-14)
 frontend/      Vue 3 + Tailwind 4 dashboard (Dashboard, Trades, Risk, Config views)
 supabase/      DB migrations (001_core_audit, 002_grants, 003_mt5_accounts, 004_runtime_state)
 model/Kronos/  Kronos model code (model/ — inference; finetune_csv/ — future fine-tuning)
@@ -49,7 +49,6 @@ C:\holy-grail-venv\Scripts\python -m soldier.loop --live --account demo
 
 **WSL/Linux (dev only — MT5 won't run here):**
 ```bash
-./venv-torch/bin/uvicorn api.main:app --port 8000         # API
 cd frontend && npm run dev                                 # dashboard (:5173)
 ```
 

@@ -106,7 +106,7 @@ def main():
 
     horizons = [h for h in HORIZONS if h <= args.pred_len]
     global CKPT
-    tag = f"_{args.symbol}_{args.tf}{'_pretrained' if args.pretrained else ''}"
+    tag = f"_{args.symbol}_{args.tf}_n{args.sample_count}{'_pretrained' if args.pretrained else ''}"
     CKPT = ROOT / "data" / f"validate{tag}.jsonl"
 
     csv = ROOT / "data" / "ohlcv" / args.symbol / f"{args.tf}.csv"

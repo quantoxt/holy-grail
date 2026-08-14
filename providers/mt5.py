@@ -211,6 +211,21 @@ class MT5Provider(MarketProvider):
         return max(info.volume_min, round(lots / info.volume_step) * info.volume_step)
 
     # --- execution ---
+    @staticmethod
+    def _filling_modes(info) -> list:
+        """Candidate fill modes for this symbol, most-preferred first, based on
+        the broker's advertised filling_mode bitmask (1=FOK, 2=IOC). The old
+        hardcoded IOC got retcode 10030 (invalid fill) on Just Global Markets."""
+        fm = getattr(info, "filling_mode", 0)
+        modes = []
+        if fm & 2:
+            modes.append(mt5.ORDER_FILLING_IOC)
+        if fm & 1:
+            modes.append(mt5.ORDER_FILLING_FOK)
+        modes.append(mt5.ORDER_FILLING_RETURN)
+        # dedupe, keep order
+        return list(dict.fromkeys(modes)) or [mt5.ORDER_FILLING_IOC]
+
     async def open_position(self, symbol, direction, size, sl=None, tp=None):
         b = self._broker_symbol(symbol) or symbol   # orders must use the broker-exact name
         info = mt5.symbol_info(b)
@@ -223,17 +238,37 @@ class MT5Provider(MarketProvider):
             "action": mt5.TRADE_ACTION_DEAL, "symbol": b, "volume": lots,
             "type": mt5.ORDER_TYPE_BUY if direction == "BUY" else mt5.ORDER_TYPE_SELL,
             "price": price, "deviation": 20, "magic": MAGIC, "comment": "holygrail",
-            "type_time": mt5.ORDER_TIME_GTC, "type_filling": mt5.ORDER_FILLING_IOC,
+            "type_time": mt5.ORDER_TIME_GTC,
         }
         if sl:
             order["sl"] = sl
         if tp:
             order["tp"] = tp
-        res = mt5.order_send(order)
+        res = None
+        for fill in self._filling_modes(info):
+            order["type_filling"] = fill
+            res = mt5.order_send(order)
+            if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+                break
+            if not (res and res.retcode == 10030):   # only invalid-fill retries
+                break
         ok = res and res.retcode == mt5.TRADE_RETCODE_DONE
         return {"id": res.order if res else None, "symbol": symbol, "direction": direction,
                 "entry_price": price, "size": size, "lots": lots, "ok": ok,
                 "retcode": res.retcode if res else None}
+
+    def is_open(self, symbol) -> bool:
+        """True if the symbol's market looks live (last tick < 15 min old).
+        Prevents pointless order attempts on closed sessions (Friday-night metals
+        were rejecting with retcode 10018 every cycle until Monday)."""
+        try:
+            t = mt5.symbol_info_tick(self._broker_symbol(symbol) or symbol)
+            if not t or not t.time:
+                return False
+            import time as _t
+            return (_t.time() - t.time) < 900
+        except Exception:
+            return True   # can't tell — let the normal path decide
 
     def get_spread(self, symbol) -> float:
         """Current spread in PRICE (ask - bid). 0 if unavailable."""
@@ -316,9 +351,16 @@ class MT5Provider(MarketProvider):
             "type": mt5.ORDER_TYPE_SELL if p.type == mt5.POSITION_TYPE_BUY else mt5.ORDER_TYPE_BUY,
             "position": position_id, "price": price, "deviation": 20, "magic": 234000,
             "comment": "holygrail-close", "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
         }
-        res = mt5.order_send(order)
+        res = None
+        sinfo = mt5.symbol_info(p.symbol)
+        for fill in self._filling_modes(sinfo if sinfo else p):
+            order["type_filling"] = fill
+            res = mt5.order_send(order)
+            if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+                break
+            if not (res and res.retcode == 10030):
+                break
         ok = res and res.retcode == mt5.TRADE_RETCODE_DONE
         return {"id": position_id, "status": "closed" if ok else "failed",
                 "retcode": res.retcode if res else None}

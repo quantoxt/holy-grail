@@ -18,6 +18,7 @@ import argparse
 import asyncio
 import json
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -49,6 +50,7 @@ class Trader:
         self.sentinel = sentinel_inst
         self.open: dict = {}
         self.candle_idx = 0
+        self.closed_until: dict = {}   # symbol → epoch until which its market is closed (10018 backoff)
         LOG.parent.mkdir(parents=True, exist_ok=True)
 
     def log(self, **kw):
@@ -198,6 +200,14 @@ class Trader:
                     continue
 
             # Spread filter: skip if the spread eats the edge
+            # (also skip closed sessions — stale tick OR a recent 10018 rejection;
+            # brokers keep quoting after the book closes, so the retcode is truth)
+            if self.closed_until.get(sym, 0) > time.time():
+                self.log(type="SKIP", symbol=sym, reason="market closed (10018 backoff)")
+                continue
+            if hasattr(self.provider, "is_open") and not self.provider.is_open(sym):
+                self.log(type="SKIP", symbol=sym, reason="market closed (stale tick)")
+                continue
             entry_proxy = sig["current_close"]
             spread = self.provider.get_spread(sym)
             spread_pct = spread / entry_proxy if entry_proxy else 0
@@ -250,6 +260,10 @@ class Trader:
             try:
                 result = await self.provider.open_position(sym, sig["direction"], lot, sl=sig["sl_price"])
                 ticket = result.get("id")
+                if result.get("retcode") == 10018:   # market closed — back off 1h
+                    self.closed_until[sym] = time.time() + 3600
+                    self.log(type="SKIP", symbol=sym, reason="market closed (retcode 10018), backing off 1h")
+                    continue
                 if not result.get("ok", True) and not ticket:
                     self.log(type="ERROR", msg=f"order rejected: {result}")
                     continue
