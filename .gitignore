@@ -47,3 +47,11 @@ istanbul/
 ehthumbs.db
 Thumbs.db
 ```
+# Credentials & personal artifacts (never share these)
+data/mt5_accounts.json
+data/*.jsonl
+data/ohlcv/
+data/models/
+data/*.log
+data/bot.log
+data/bot.err

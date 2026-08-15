@@ -3,9 +3,10 @@
 /// this client reads them. Anon key is public by design (protected by RLS, currently open).
 import { createClient } from '@supabase/supabase-js'
 
-const url = import.meta.env.VITE_SUPABASE_URL || 'https://***REDACTED-PROJECT***.supabase.co'
-const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY ||
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdwZnVkYm5jcG1hYWJuc3ptenR0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYyNjM1MTYsImV4cCI6MjEwMTgzOTUxNn0.rngWUQdtfw-xQ5DXWDhBk0AIHuTWtfKs4Y_QKe4Rinc'
+// Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in frontend/.env.local (or Vercel).
+// No hardcoded fallbacks — each deployment points at its OWN Supabase project.
+const url = import.meta.env.VITE_SUPABASE_URL
+const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
 
 export const supabase = createClient(url, anonKey)
 

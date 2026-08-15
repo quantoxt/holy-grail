@@ -1,0 +1,16 @@
+{
+  "active": "demo",
+  "accounts": {
+    "demo": {
+      "login": 12345678,
+      "password": "your-mt5-password",
+      "server": "MetaQuotes-Demo"
+    },
+    "second_account_example": {
+      "_comment": "add as many named accounts as you like; switch by setting 'active' above, or from the dashboard",
+      "login": 0,
+      "password": "",
+      "server": "YourBroker-Server"
+    }
+  }
+}

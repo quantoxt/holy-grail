@@ -1,6 +1,6 @@
 # Running the Bot — Start, Stop, Deploy, Lifecycle
 
-Production runs on the **Windows VPS** (`***REDACTED-HOST***`) because the `MetaTrader5`
+Production runs on the **Windows VPS** (`<vps-user>@<vps-host>`) because the `MetaTrader5`
 package is Windows-only. This doc covers everyday operation. For debugging commands, see
 `vps-troubleshooting.md`.
 
@@ -30,15 +30,15 @@ Because config is re-read every 5s, **most changes need no restart** — only co
 
 ```bash
 # STOP (kills the bot; open positions stay at the broker under their SL)
-ssh ***REDACTED-HOST*** 'taskkill /F /IM pythonw.exe'
+ssh <vps-user>@<vps-host> 'taskkill /F /IM pythonw.exe'
 
 # START
-ssh ***REDACTED-HOST*** 'schtasks /run /tn HolyGrail'
+ssh <vps-user>@<vps-host> 'schtasks /run /tn HolyGrail'
 
 # CLEAN RESTART (the safe 3-step — use this after deploys)
-ssh ***REDACTED-HOST*** 'taskkill /F /IM pythonw.exe'
-ssh ***REDACTED-HOST*** 'tasklist /fi "imagename eq pythonw.exe"'   # MUST show "No tasks"
-ssh ***REDACTED-HOST*** 'schtasks /run /tn HolyGrail'
+ssh <vps-user>@<vps-host> 'taskkill /F /IM pythonw.exe'
+ssh <vps-user>@<vps-host> 'tasklist /fi "imagename eq pythonw.exe"'   # MUST show "No tasks"
+ssh <vps-user>@<vps-host> 'schtasks /run /tn HolyGrail'
 ```
 
 After start, wait ~40s (Kronos imports) and confirm the boot line in the log:
@@ -61,13 +61,13 @@ Holy Grail | LIVE | symbols=[…] tf=5m goal=$14.0 ceiling=$64.0
 python3 -m py_compile soldier/loop.py providers/mt5.py && echo OK
 
 # 2. push the changed files
-scp soldier/loop.py ***REDACTED-HOST***:"C:/Users/Aurora/Documents/PROJECTS/holy-grail/soldier/loop.py"
+scp soldier/loop.py <vps-user>@<vps-host>:"C:/path/to/holy-grail/soldier/loop.py"
 #   (repeat per file; preserve the subdirectory path)
 
 # 3. clean restart (the 3-step above)
 
 # 4. verify the new code loaded
-ssh ***REDACTED-HOST*** 'powershell -NoProfile -Command "Select-String -Path C:\Users\Aurora\Documents\PROJECTS\holy-grail\soldier\loop.py -Pattern \"SOME_NEW_FUNCTION\" -Quiet"'
+ssh <vps-user>@<vps-host> 'powershell -NoProfile -Command "Select-String -Path C:\path\to\holy-grail\soldier\loop.py -Pattern \"SOME_NEW_FUNCTION\" -Quiet"'
 ```
 The **frontend** is separate — it deploys on Vercel (you redeploy there), not to the VPS.
 
@@ -88,6 +88,6 @@ Every cycle logs a `[CYCLE]` summary: `scanned=N tradeable=N opened=N open_total
 
 ## Quick health check (one command)
 ```bash
-ssh ***REDACTED-HOST*** 'tasklist /fi "imagename eq pythonw.exe" /fo csv /nh && powershell -NoProfile -Command "Get-Content C:\Users\Aurora\Documents\PROJECTS\holy-grail\data\bot.log -Tail 5 -Encoding UTF8"'
+ssh <vps-user>@<vps-host> 'tasklist /fi "imagename eq pythonw.exe" /fo csv /nh && powershell -NoProfile -Command "Get-Content C:\path\to\holy-grail\data\bot.log -Tail 5 -Encoding UTF8"'
 ```
 Expect: 2 pythonw lines + recent `[CYCLE]` lines with a current timestamp.

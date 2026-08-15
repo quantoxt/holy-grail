@@ -57,7 +57,7 @@ Right now XAUUSD/XAGUSD/GBPUSD are active on **zero evidence**. The BTCUSD valid
 - **Watchdog**: the Scheduled Task triggers AtStartup only. Add a second task (every 5 min) that starts HolyGrail if not running (`tasklist` check + `schtasks /run`), or run under NSSM as a real service with auto-restart. A crashed bot with open positions and no SL management is your worst case.
 - **Heartbeat alerting**: the dashboard shows a red OFFLINE badge, but nobody looks at a dashboard at 3am. Send a Telegram message if telemetry hasn't run for >60s (a tiny second process, or the watchdog task).
 - **Backups**: `data/mt5_accounts.json` and `.env` exist only on the VPS. Copy them somewhere safe (they're gitignored for good reason — back them up another way).
-- **Power**: the VPS is on a LAN IP (***REDACTED-IP***). If that box is at home, a power cut or ISP blip takes the bot down with open positions. The hard SLs make this survivable, but know that it's your design's tolerance: SL is the safety net, not the bot.
+- **Power**: the VPS is on a LAN IP (<lan-ip>). If that box is at home, a power cut or ISP blip takes the bot down with open positions. The hard SLs make this survivable, but know that it's your design's tolerance: SL is the safety net, not the bot.
 
 ### 5. Config drift is silently contradicting the design
 Current cloud `bot_config` row says `max_open_positions: 10`, `max_risk_per_trade: 10`, `max_weekly_drawdown: 100`. The documented design says 2 / ~$10 / $100-drawdown-on-$500... but **10 open positions on a $500 account is not the framework you described to me**. Likely leftovers from auto-calibrate or dashboard edits. Two fixes:

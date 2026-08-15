@@ -84,7 +84,7 @@ MT5 terminal ──candles──> Soldier (Kronos signal)
 | `mt5_accounts` | dashboard | the MT5 accounts + which is active |
 
 ## Where it physically runs
-- **Bot + MT5 terminal:** Windows VPS (`***REDACTED-HOST***`). The `MetaTrader5` Python
+- **Bot + MT5 terminal:** Windows VPS (`<vps-user>@<vps-host>`). The `MetaTrader5` Python
   package is Windows-only, so production is Windows. Bot runs as Scheduled Task `HolyGrail`
   (`pythonw`, no console window), terminal auto-starts via task `StartMT5`.
 - **Dashboard:** Vercel (`https://holygrail.quantoxtinc.com`).

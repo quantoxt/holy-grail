@@ -10,7 +10,7 @@ dashboard share). All have been verified working in this session.
 
 | Thing | Value |
 |---|---|
-| VPS host | `***REDACTED-HOST***` |
+| VPS host | `<your-vps-user>@<your-vps-host>` |
 | Project on VPS | `C:\Users\Aurora\Documents\PROJECTS\holy-grail` |
 | VPS Python (venv) | `C:\Users\Aurora\Documents\PROJECTS\holy-grail\venv\Scripts\python.exe` |
 | Bot log | `…\holy-grail\data\bot.log` (stdout mirror) |
@@ -18,15 +18,15 @@ dashboard share). All have been verified working in this session.
 | JSONL audit | `…\holy-grail\data\paper_log.jsonl` (every decision, raw) |
 | Scheduled task | `HolyGrail` (runs `pythonw -u -m soldier.loop --interval 300`) |
 | MT5 terminal | `C:\Program Files\MetaTrader 5\terminal64.exe` (auto-start task `StartMT5`) |
-| Supabase URL | `https://***REDACTED-PROJECT***.supabase.co` |
-| Supabase anon key | public — see `SBKEY` below (RLS-open by design) |
+| Supabase URL | `<your-supabase-project>.supabase.co` |
+| Supabase anon key | set `SBKEY` below from your dashboard (secret while RLS is open) |
 
 ```bash
 # set these once per shell session:
-VPS=***REDACTED-HOST***
+VPS=<your-vps-user>@<your-vps-host>
 PROJ='C:\Users\Aurora\Documents\PROJECTS\holy-grail'
-SBKEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdwZnVkYm5jcG1hYWJuc3ptenR0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYyNjM1MTYsImV4cCI6MjEwMTgzOTUxNn0.rngWUQdtfw-xQ5DXWDhBk0AIHuTWtfKs4Y_QKe4Rinc'
-SB=https://***REDACTED-PROJECT***.supabase.co
+SBKEY='<your-supabase-anon-key>'
+SB=<your-supabase-project>.supabase.co
 ```
 
 > **Quoting rules over SSH→Windows:** simple status commands use `ssh $VPS 'cmd'`.
@@ -380,10 +380,10 @@ connection); wrap risky calls in try/except so the probe can't wedge anything.
 ## 13. Cheat sheet (copy-paste most-used)
 
 ```bash
-VPS=***REDACTED-HOST***
+VPS=<your-vps-user>@<your-vps-host>
 PROJ='C:\Users\Aurora\Documents\PROJECTS\holy-grail'
-SBKEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdwZnVkYm5jcG1hYWJuc3ptenR0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYyNjM1MTYsImV4cCI6MjEwMTgzOTUxNn0.rngWUQdtfw-xQ5DXWDhBk0AIHuTWtfKs4Y_QKe4Rinc'
-SB=https://***REDACTED-PROJECT***.supabase.co
+SBKEY='<your-supabase-anon-key>'
+SB=<your-supabase-project>.supabase.co
 
 # alive?
 ssh $VPS 'tasklist /fi "imagename eq pythonw.exe" /fo csv /nh'
