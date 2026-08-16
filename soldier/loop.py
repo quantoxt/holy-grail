@@ -51,6 +51,7 @@ class Trader:
         self.open: dict = {}
         self.candle_idx = 0
         self.closed_until: dict = {}   # symbol → epoch until which its market is closed (10018 backoff)
+        self.pending_deals: list = []  # closes whose deal wasn't in history yet → retried ~60s
         LOG.parent.mkdir(parents=True, exist_ok=True)
 
     def log(self, **kw):
@@ -383,15 +384,19 @@ class Trader:
             except Exception as e:
                 self.log(type="ERROR", msg=f"close failed {sym}: {e}")
             # broker-truth P&L from the closing deal (incl. swap/commission);
-            # falls back to the estimate if the deal can't be found yet
+            # falls back to the estimate if the deal can't be found yet — the
+            # broker's history index lags a close by minutes, so queue a retry
             if hasattr(self.provider, "get_closed_deal"):
                 try:
                     deal = self.provider.get_closed_deal(pos["ticket"])
-                    if deal:
-                        pnl, exit_price = deal["pnl"], deal["price"]
-                        correct = pnl > 0
                 except Exception:
-                    pass
+                    deal = None
+                if deal:
+                    pnl, exit_price = deal["pnl"], deal["price"]
+                    correct = pnl > 0
+                elif pos.get("trade_id"):
+                    self.pending_deals.append(
+                        {"trade_id": pos["trade_id"], "ticket": pos["ticket"]})
 
         self.sentinel.on_trade_closed(pnl, correct)
         self.watcher.record_resolution(correct)
@@ -450,7 +455,11 @@ class Trader:
             if deal:
                 pnl, exit_price = deal["pnl"], deal["price"]
                 result = "win" if pnl > 0 else "loss"
-            else:
+            elif pos.get("trade_id"):
+                # deal not in history yet — correct the row from telemetry later
+                self.pending_deals.append(
+                    {"trade_id": pos["trade_id"], "ticket": ticket})
+            if not deal:
                 # deal not found (history window/permission) — estimate from last price
                 try:
                     candles = await self.provider.get_candles(sym, settings.timeframe, 5)
@@ -473,6 +482,32 @@ class Trader:
             except Exception:
                 pass
             self.open.pop(sym, None)
+
+    def _reconcile_pending_deals(self):
+        """Retry deal lookups for closes the broker hadn't indexed yet. The MT5
+        history API lags a close by minutes — the first lookup right after close
+        often returns None and the trades row gets a price-diff estimate. Once
+        the real deal appears, correct the row with broker truth (pnl incl.
+        swap/commission, actual fill price)."""
+        if not self.pending_deals:
+            return
+        still_pending = []
+        for p in self.pending_deals:
+            try:
+                deal = self.provider.get_closed_deal(p["ticket"])
+            except Exception:
+                deal = None
+            if not deal:
+                still_pending.append(p)
+                continue
+            result = "win" if deal["pnl"] > 0 else "loss"
+            try:
+                db.update_trade_result(p["trade_id"], deal["price"], deal["pnl"], result)
+            except Exception:
+                pass
+            self.log(type="DEAL_FIX", ticket=p["ticket"], pnl=f"${deal['pnl']:+.2f}",
+                     exit=deal["price"], msg="trades row corrected with broker deal")
+        self.pending_deals = still_pending
 
     def _manage_exits(self, broker_positions):
         """Per-position SL management, called from telemetry every ~5s. Two tiers:
@@ -598,6 +633,7 @@ class Trader:
                 await self._maybe_switch_account()                  # dashboard-driven swap
                 if tick % eval_every == 0:
                     await self._resolve_evaluations()               # score matured predictions
+                    self._reconcile_pending_deals()                # correct lagged deal P&L
                 today = datetime.now(timezone.utc).date()
                 if last_prune_day != today:
                     last_prune_day = today
@@ -617,16 +653,37 @@ class Trader:
                 positions = await self.provider.get_open_positions()  # refresh post-close
                 self._manage_exits(positions)
                 syms = self.provider.discover_symbols(force=(tick % sym_refresh_every == 0))
-                # broker-truth weekly P&L (deal history since Monday 00:00 UTC) for the
-                # dashboard card — trades-table recomputation drifts from the balance
+                # Balance-based weekly P&L for the dashboard card. Deal-history sums
+                # (realized_since) MISS closes made in the last minutes-to-hours
+                # (broker history index lag) — balance arithmetic cannot. Weekly =
+                # balance − week_start_balance − net deposits/withdrawals this week.
                 weekly_pnl = None
-                if hasattr(self.provider, "realized_since"):
+                if hasattr(self.provider, "cashflow_since"):
                     try:
                         now_d = datetime.now(timezone.utc)
                         wk = now_d.date()
                         wk = wk.fromordinal(wk.toordinal() - wk.weekday())   # Monday 00:00
-                        weekly_pnl = self.provider.realized_since(
-                            datetime(wk.year, wk.month, wk.day, tzinfo=timezone.utc).timestamp())
+                        wk_ts = datetime(wk.year, wk.month, wk.day, tzinfo=timezone.utc).timestamp()
+                        wk_iso = wk.isoformat()
+                        if runtime.week_start_monday != wk_iso:
+                            # New week (or first boot with this feature): snapshot the
+                            # week's opening balance. On a clean Monday rollover there
+                            # are no deals yet, so this is just the current balance; on
+                            # a mid-week first boot we back out this week's cashflow and
+                            # realized deals so the snapshot equals "balance at Monday".
+                            cash = self.provider.cashflow_since(wk_ts) or 0.0
+                            real = self.provider.realized_since(wk_ts) or 0.0
+                            runtime.week_start_balance = round(acct["balance"] - cash - real, 2)
+                            runtime.week_start_monday = wk_iso
+                            runtime.persist()
+                            self.log(type="WEEK_SNAPSHOT", monday=wk_iso,
+                                     week_start_balance=runtime.week_start_balance,
+                                     msg="balance snapshot for balance-based weekly P&L")
+                        cash = self.provider.cashflow_since(wk_ts) or 0.0
+                        weekly_pnl = round(acct["balance"] - runtime.week_start_balance - cash, 2)
+                        # keep Sentinel on broker truth so Telegram + kill checks
+                        # agree with the dashboard card
+                        self.sentinel.weekly_pnl = weekly_pnl
                     except Exception:
                         weekly_pnl = None
                 # all-time realized (Net P&L card) — refresh less often, it's stable

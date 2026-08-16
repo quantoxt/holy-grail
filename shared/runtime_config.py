@@ -72,6 +72,14 @@ class RuntimeConfig:
     bot_running: bool = True            # dashboard start/stop toggle
     trading_paused: bool = False        # pause (stay connected, no new trades)
 
+    # --- balance-based weekly P&L (broker history lags real closes) ---
+    # Snapshot of the account balance at the start of the current trading week
+    # (Monday 00:00 UTC). weekly_pnl = balance − week_start_balance − cashflow_since
+    # (deposits/withdrawals). Deal-history sums miss closes made minutes ago;
+    # balance arithmetic can't.
+    week_start_balance: float = None    # None until first snapshot
+    week_start_monday: str = ""         # 'YYYY-MM-DD' of the Monday this snapshot belongs to
+
     # --- symbols (runtime-adjustable) ---
     active_symbols: list = field(default_factory=lambda: ["XAUUSD", "XAGUSD", "EURUSD", "GBPUSD"])
 

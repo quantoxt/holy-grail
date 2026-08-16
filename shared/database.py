@@ -82,6 +82,14 @@ class DBLogger:
             "exit_time": datetime.now(timezone.utc).isoformat(),
         }).eq("id", trade_id).execute()
 
+    def update_trade_result(self, trade_id, exit_price, pnl, result):
+        """Correct a closed trade's outcome with broker-truth numbers (deferred
+        deal reconciliation). Does NOT re-stamp exit_time — the close moment
+        already happened; only the numbers were estimates."""
+        self.client.table("trades").update({
+            "exit_price": exit_price, "pnl": pnl, "result": result,
+        }).eq("id", trade_id).execute()
+
     # --- prediction evaluations (the measurement loop) ---
     def log_evaluation(self, symbol, timeframe, direction, predicted_move,
                        predicted_close, current_close, confidence, snr,

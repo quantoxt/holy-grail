@@ -297,9 +297,14 @@ class MT5Provider(MarketProvider):
             frm = to - timedelta(days=7)
             deals = mt5.history_deals_get(frm, to)
             for d in (deals or []):
-                if (getattr(d, "position", 0) == position_ticket
+                # package version dependent field name: this build exposes
+                # position_id; older ones expose position
+                pos_id = getattr(d, "position_id", None) or getattr(d, "position", 0)
+                if (pos_id == position_ticket
                         and getattr(d, "entry", -1) == mt5.DEAL_ENTRY_OUT):
-                    return {"pnl": float(d.profit), "price": float(d.price),
+                    return {"pnl": float(d.profit) + float(getattr(d, "commission", 0.0))
+                            + float(getattr(d, "swap", 0.0)) + float(getattr(d, "fee", 0.0)),
+                            "price": float(d.price),
                             "time": int(getattr(d, "time", 0))}
         except Exception:
             return None
@@ -321,6 +326,24 @@ class MT5Provider(MarketProvider):
                     continue
                 total += float(d.profit) + float(getattr(d, "commission", 0.0)) \
                     + float(getattr(d, "swap", 0.0))
+            return round(total, 2)
+        except Exception:
+            return None
+
+    def cashflow_since(self, ts):
+        """Net deposits/withdrawals/credits since `ts` (epoch seconds) — deals with
+        NO symbol (balance operations), not trades. Used by the balance-based
+        weekly P&L so a mid-week deposit doesn't read as profit. None if history
+        is unavailable."""
+        try:
+            from datetime import datetime, timezone
+            deals = mt5.history_deals_get(datetime.fromtimestamp(ts, timezone.utc),
+                                          datetime.now(timezone.utc))
+            total = 0.0
+            for d in (deals or []):
+                if d.symbol or d.time < ts:
+                    continue   # only pure balance operations
+                total += float(d.profit)
             return round(total, 2)
         except Exception:
             return None
