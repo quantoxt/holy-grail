@@ -52,6 +52,7 @@ class Trader:
         self.candle_idx = 0
         self.closed_until: dict = {}   # symbol → epoch until which its market is closed (10018 backoff)
         self.pending_deals: list = []  # closes whose deal wasn't in history yet → retried ~60s
+        self.kill_latched: bool = False  # last cycle's kill-switch state (orphan closer)
         LOG.parent.mkdir(parents=True, exist_ok=True)
 
     def log(self, **kw):
@@ -143,6 +144,7 @@ class Trader:
         killed, kreason, close_all = self.sentinel.check_kill(
             equity, len(self.open), symbols=runtime.active_symbols,
             floating_pnl=floating)
+        self.kill_latched = killed   # telemetry uses this to force-close orphans
         if killed:
             if close_all and self.open:
                 await self._close_all(f"kill:{kreason}")
@@ -171,7 +173,15 @@ class Trader:
         ranked = sorted(tradeable.items(), key=lambda x: abs(x[1]["predicted_move"]), reverse=True)
 
         # Phase 5: Open positions (best first, up to max_open_positions)
-        open_slots = runtime.max_open_positions - len(self.open)
+        # Slot count uses the BROKER's real position count too — the bot's memory
+        # can undercount (an orphaned open, a failed tracking) and over-opening
+        # real money is the one unforgivable direction to be wrong in.
+        broker_open = 0
+        try:
+            broker_open = len(await self.provider.get_open_positions())
+        except Exception:
+            broker_open = len(self.open)
+        open_slots = runtime.max_open_positions - max(len(self.open), broker_open)
         opened_syms = set()
 
         for sym, sig in ranked:
@@ -278,7 +288,13 @@ class Trader:
                 "contract_size": spec["contract_size"],
                 "ticket": ticket, "trade_id": None, "sl_price": sig["sl_price"],
                 "move": sig["predicted_move"],
-                "target_price": sig["predicted_close"],   # predicted-level TP
+                # Exit target: volatility-sized when tp_vol_mult>0 (predicted magnitude
+                # carries no info — corr(pred,actual) ≈ 0), else a fraction of the
+                # predicted move (1.0 = exactly Kronos's predicted close).
+                "target_price": (
+                    entry + (runtime.tp_vol_mult * sig["vol"] * entry)
+                    if (runtime.tp_vol_mult > 0 and sig.get("vol"))
+                    else entry + runtime.tp_fraction * (sig["predicted_close"] - entry)),
                 "actual_risk": actual_risk, "peak_profit": 0.0,
             }
             try:
@@ -538,11 +554,23 @@ class Trader:
             cur_sl = pos.get("sl_price")
             new_sl = None
 
-            if profit >= runtime.profit_lock_target:
-                locked = max(runtime.profit_lock_min,
+            # Thresholds are R-based when the trade's actual $-at-SL is known:
+            # min-lot trades float only ±$1-2 on BTC, so the old FIXED $5 trigger
+            # could never fire — winners round-tripped to breakeven before horizon.
+            risk_ref = pos.get("actual_risk") or 0.0
+            trail_target = (runtime.profit_lock_r * risk_ref) if risk_ref > 0 \
+                else runtime.profit_lock_target
+            be_target = (runtime.breakeven_lock_r * risk_ref) if risk_ref > 0 else None
+
+            if profit >= trail_target:
+                locked = max((min(runtime.profit_lock_min, 0.5 * risk_ref) if risk_ref > 0
+                              else runtime.profit_lock_min),
                              pos["peak_profit"] * runtime.profit_lock_fraction)
                 # SL price that realizes exactly `locked` of profit if hit
                 new_sl = (entry + locked / unit) if direction == "BUY" else (entry - locked / unit)
+            elif be_target is not None:
+                if profit >= be_target:
+                    new_sl = entry * (0.9999 if direction == "BUY" else 1.0001)
             elif settings.breakeven_lock:
                 move = pos.get("move")
                 if move:
@@ -646,6 +674,25 @@ class Trader:
                 # log closes for any tracked position the broker no longer has
                 # (SL hit / manual close / crash mid-close) so trades don't stick at 'open'
                 await self._reconcile_closed({p["ticket"] for p in positions})
+                # SAFETY NET: a broker position the bot is NOT tracking is an orphan
+                # (opened by a post-order crash, a restart that lost state, anything).
+                # While kill-latched the book must be FLAT — force-close orphans.
+                tracked = {p.get("ticket") for p in self.open.values()}
+                orphans_were_closed = False
+                if getattr(self, "kill_latched", False):
+                    for bp in positions:
+                        if bp["ticket"] in tracked:
+                            continue
+                        try:
+                            await self.provider.close_position(bp["ticket"])
+                            self.log(type="ORPHAN_CLOSE", symbol=bp["symbol"],
+                                     ticket=bp["ticket"], pnl=f"${bp.get('profit', 0):+.2f}",
+                                     msg="untracked position force-closed during kill-latch")
+                            orphans_were_closed = True
+                        except Exception as e:
+                            self.log(type="ORPHAN_CLOSE_ERR", symbol=bp["symbol"], msg=str(e))
+                    if orphans_were_closed:
+                        positions = await self.provider.get_open_positions()
                 floating = round(sum(p.get("profit", 0) for p in positions), 2)
                 # goal/ceiling bank (5s reaction), predicted-level TP, then trails
                 await self._maybe_bank_goal(acct["equity"], floating)
@@ -724,6 +771,12 @@ class Trader:
             # P&L/streak tracking so nothing carries over.
             self.open.clear()
             self.sentinel.reset_for_new_account()
+            # Weekly P&L snapshot is per-ACCOUNT, not per-bot: a balance snapshotted
+            # on the old login makes the card compute balance(new) − snapshot(old) —
+            # garbage. Clear it so telemetry re-snapshots for this login in ~5s.
+            runtime.week_start_balance = None
+            runtime.week_start_monday = ""
+            runtime.persist()
             self.log(type="SWITCH", msg=f"switched to {self.provider.account_name} "
                      f"(login {getattr(self.provider, '_login', '?')}) — stats reset")
             try:

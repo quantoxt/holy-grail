@@ -63,6 +63,23 @@ level TP + profit-lock ratchets, no fixed TP). Script: `research/rr_validation.p
 
 ---
 
+### 2.5 BTCUSD fine-tune on broker data (VAST RTX A4000, 2026-08-17) — **FAIL; the BTC edge itself dies on this feed**
+- 50/50 time split of the broker's 100k M5 candles: train 2025-09→2026-02 (Sep–Feb),
+  walk-forward on untouched 2026-02→2026-08 half. Tokenizer 30ep + predictor 20ep,
+  lookback 512 / pred_len 24 (matches live), N=5.
+- **Fine-tuned: h=24 = 50.8%** (h=1/6/12: 51.3/51.7/50.8). Confidence slices no help.
+- **Zero-shot control, same window/stride/N: h=24 = 50.0%.** So the fine-tune changed
+  nothing (+0.8pp, noise) — and more importantly, the original 54.7% BTC edge
+  (Binance spot, N=1, earlier data) does NOT survive on this broker's CFD feed even
+  zero-shot.
+- Artifacts (on VAST box until destroyed): `data/finetune_btc.log`,
+  `data/validate_BTCUSD_5m_n5.jsonl`, `data/zero_shot_control.log`,
+  model at `model/Kronos/finetune_csv/finetuned/btcusd_m5_5050`. Total cost ≈ $0.65.
+- **Verdict: on the broker feed the bot actually trades, NO instrument has a measured
+  directional edge — zero-shot or fine-tuned, N=1 or N=5.** The only remaining
+  unmeasured combination is Binance spot at N=1 in a recent window (moot — the bot
+  doesn't trade Binance).
+
 ## Phase 3 — Live measurement (ongoing, 2026-08-14+)
 
 ### 3.1 Live shadow measurement via `prediction_evaluations`

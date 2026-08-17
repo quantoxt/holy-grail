@@ -36,6 +36,16 @@ class RuntimeConfig:
     max_move_pct: float = 0.015         # plausibility cap: reject |predicted_move| > 1.5% (long-shots)
     min_confidence: float = 0.50        # skip signals below this confidence (observed: sub-50% trades lose)
     tp_at_predicted: bool = True        # take profit when price reaches the predicted close (path-dependency fix)
+    tp_fraction: float = 1.0            # target = entry + fraction × (predicted_close − entry). 1.0 = exactly
+                                        # Kronos's predicted price. Data (2026-08-16): realized moves average
+                                        # only ~25-35% of predicted — full targets were reached in just 9-17%
+                                        # of evals, which is why trades rode to horizon. Lower to ~0.5 for
+                                        # shorter holds (dashboard-adjustable).
+    tp_vol_mult: float = 0.0            # >0 overrides the predicted target: target = entry ± mult × horizon-vol
+                                        # (realized σ over 2h). Correlation of predicted vs actual size is ≈0
+                                        # (even negative on XAUUSD) — predicted MAGNITUDE carries no information,
+                                        # so exits sized to real volatility, not the forecast. ~0.7 = median
+                                        # realized move (reachable ~50% of the time); 1.0 = one sigma.
 
     # --- min-lot risk reality (observed overnight 2026-08-10) ---
     # Brokers floor lot to 0.01, so the $-at-SL is whatever min-lot dictates, NOT
@@ -49,9 +59,11 @@ class RuntimeConfig:
     # give it back (a +$14 floating held to horizon became -$7 overnight).
     # Per-trade: once floating profit >= profit_lock_target, ratchet SL to lock
     # max(profit_lock_min, peak_profit × profit_lock_fraction) of the gain.
-    profit_lock_target: float = 5.0     # floating-$ at which profit-trailing engages
-    profit_lock_min: float = 2.0        # minimum $ profit locked once trailing on
+    profit_lock_target: float = 5.0     # fixed fallback: floating-$ at which trailing engages
+    profit_lock_min: float = 2.0        # fixed fallback: minimum $ profit locked once trailing on
     profit_lock_fraction: float = 0.5   # lock this fraction of peak favorable $
+    profit_lock_r: float = 0.8          # trailing engages at floating >= this × actual $-at-SL (R)
+    breakeven_lock_r: float = 0.4       # SL→entry at floating >= this × R (before full trailing)
 
     # --- dynamic adjustments ---
     thursday_aggression: bool = True    # boost risk to $1.50 on Thursday if behind

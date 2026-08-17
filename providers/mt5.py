@@ -226,12 +226,15 @@ class MT5Provider(MarketProvider):
         # dedupe, keep order
         return list(dict.fromkeys(modes)) or [mt5.ORDER_FILLING_IOC]
 
-    async def open_position(self, symbol, direction, size, sl=None, tp=None):
+    async def open_position(self, symbol, direction, lots, sl=None, tp=None):
+        """Open a market position. `lots` is an actual LOT count (NOT USD notional —
+        the loop sizes via sentinel.lot_size() and passes the result here directly;
+        treating it as notional silently floored every order to volume_min)."""
         b = self._broker_symbol(symbol) or symbol   # orders must use the broker-exact name
         info = mt5.symbol_info(b)
         if not info.visible:
             mt5.symbol_select(b, True)
-        lots = self._lots(symbol, size)
+        lots = max(info.volume_min, round(lots / info.volume_step) * info.volume_step)
         tick = mt5.symbol_info_tick(b)
         price = tick.ask if direction == "BUY" else tick.bid
         order = {
@@ -254,7 +257,7 @@ class MT5Provider(MarketProvider):
                 break
         ok = res and res.retcode == mt5.TRADE_RETCODE_DONE
         return {"id": res.order if res else None, "symbol": symbol, "direction": direction,
-                "entry_price": price, "size": size, "lots": lots, "ok": ok,
+                "entry_price": price, "size": lots, "lots": lots, "ok": ok,
                 "retcode": res.retcode if res else None}
 
     def is_open(self, symbol) -> bool:

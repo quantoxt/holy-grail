@@ -21,12 +21,14 @@ CHUNK = 50_000   # per copy_rates_from_pos call
 
 
 def resolve_symbol(name: str):
-    """Exact match first, then broker-suffixed variants (e.g. 'XAUUSD.')."""
+    """Exact match first, then broker-suffixed variants (e.g. 'XAUUSD.',
+    'BTCUSD.m') — shortest suffixed name wins."""
     if mt5.symbol_info(name) is not None:
         return name
-    for s in (mt5.symbols_get() or []):
-        if s.name.rstrip(".").upper() == name.upper():
-            return s.name
+    cand = [s.name for s in (mt5.symbols_get() or [])
+            if s.name.upper().startswith(name.upper())]
+    if cand:
+        return min(cand, key=len)
     return None
 
 

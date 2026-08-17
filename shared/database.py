@@ -70,7 +70,7 @@ class DBLogger:
             "symbol": symbol, "market_mode": settings.market_mode, "paper": paper,
             "direction": direction, "entry_price": entry_price,
             "entry_time": datetime.now(timezone.utc).isoformat(),
-            "size": size, "confidence": confidence, "horizon": horizon,
+            "size": size, "lots": size, "confidence": confidence, "horizon": horizon,
             "result": "open", "provider_ticket": str(ticket) if ticket else None,
             "mt5_login": mt5_login,
         }).execute()
