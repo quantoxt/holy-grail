@@ -42,6 +42,10 @@ class RuntimeConfig:
                                         # of evals, which is why trades rode to horizon. Lower to ~0.5 for
                                         # shorter holds (dashboard-adjustable).
     tp_vol_mult: float = 0.0            # >0 overrides the predicted target: target = entry ± mult × horizon-vol
+    tp_vol_mults: dict = field(default_factory=dict)  # per-symbol override of tp_vol_mult (e.g. {"XAUUSD": 1.5}) — 0.7σ is
+                                        # spread-scale on quiet metals/forex → the bot scalps itself broke
+    tp_min_spread_mult: float = 3.0     # target must sit at least this many spreads from the FILL price —
+                                        # a target inside the spread is a guaranteed spread-loss, not a win
                                         # (realized σ over 2h). Correlation of predicted vs actual size is ≈0
                                         # (even negative on XAUUSD) — predicted MAGNITUDE carries no information,
                                         # so exits sized to real volatility, not the forecast. ~0.7 = median
@@ -89,7 +93,10 @@ class RuntimeConfig:
     # (Monday 00:00 UTC). weekly_pnl = balance − week_start_balance − cashflow_since
     # (deposits/withdrawals). Deal-history sums miss closes made minutes ago;
     # balance arithmetic can't.
-    week_start_balance: float = None    # None until first snapshot
+    week_start_balance: float = None
+    week_start_cash: float = 0.0    # cashflow-since-Monday already embedded in week_start_balance —
+                                     # only NEW deposits after the snapshot are backed out of weekly P&L
+                                     # (guards against the broker indexing deposits late)    # None until first snapshot
     week_start_monday: str = ""         # 'YYYY-MM-DD' of the Monday this snapshot belongs to
 
     # --- symbols (runtime-adjustable) ---

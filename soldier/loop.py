@@ -238,7 +238,7 @@ class Trader:
             self.sentinel.check_time_resets(candle_date)
             risk = self.sentinel.risk_amount(sig["confidence"], candle_date)
             spec = await self.provider.get_symbol_info(sym)
-            entry = sig["current_close"]
+            entry = sig["current_close"]   # proxy for sizing; the FILL price is adopted after the order
             lot = self.sentinel.lot_size(
                 risk, entry, sig["sl_price"],
                 spec["contract_size"], spec["volume_min"], spec["volume_step"])
@@ -282,8 +282,29 @@ class Trader:
                 self.log(type="ERROR", msg=f"open failed {sym}: {e}")
                 continue
 
+            # Adopt the ACTUAL fill price — the candle close can be minutes stale, and
+            # a target computed off a stale entry fires instantly (spread-scale scalping).
+            fill = result.get("entry_price") or entry
+            direction_sign_open = 1 if sig["direction"] == "BUY" else -1
+            # Per-symbol TP multiplier: quiet instruments (metals/forex) need a wider
+            # multiple or the 0.7σ global sits inside the spread.
+            _tp_mult = (runtime.tp_vol_mults or {}).get(sym, runtime.tp_vol_mult)
+            target_price = (
+                fill + (_tp_mult * sig["vol"] * fill)
+                if (_tp_mult > 0 and sig.get("vol"))
+                else fill + runtime.tp_fraction * (sig["predicted_close"] - fill))
+            # Spread floor: a target closer than a few spreads from the fill is a
+            # guaranteed net loss even when "hit" — push it out.
+            spread_now = self.provider.get_spread(sym)
+            if spread_now and runtime.tp_min_spread_mult > 0:
+                min_dist = runtime.tp_min_spread_mult * spread_now
+                if direction_sign_open > 0 and target_price < fill + min_dist:
+                    target_price = fill + min_dist
+                elif direction_sign_open < 0 and target_price > fill - min_dist:
+                    target_price = fill - min_dist
+
             self.open[sym] = {
-                "direction": sig["direction"], "entry_price": entry,
+                "direction": sig["direction"], "entry_price": fill,
                 "entry_idx": self.candle_idx, "lot": lot,
                 "contract_size": spec["contract_size"],
                 "ticket": ticket, "trade_id": None, "sl_price": sig["sl_price"],
@@ -291,10 +312,7 @@ class Trader:
                 # Exit target: volatility-sized when tp_vol_mult>0 (predicted magnitude
                 # carries no info — corr(pred,actual) ≈ 0), else a fraction of the
                 # predicted move (1.0 = exactly Kronos's predicted close).
-                "target_price": (
-                    entry + (runtime.tp_vol_mult * sig["vol"] * entry)
-                    if (runtime.tp_vol_mult > 0 and sig.get("vol"))
-                    else entry + runtime.tp_fraction * (sig["predicted_close"] - entry)),
+                "target_price": target_price,
                 "actual_risk": actual_risk, "peak_profit": 0.0,
             }
             try:
@@ -312,7 +330,7 @@ class Trader:
                      conf=f"{sig['confidence']:.2f}", entry=entry)
 
             try:
-                await send_telegram(
+                self.open[sym]["tg_msg_id"] = await send_telegram(
                     f"📡 OPEN {sym} {sig['direction']}\n"
                     f"Lot: {lot} | Risk @SL: ${actual_risk:.2f}\n"
                     f"Confidence: {sig['confidence']:.0%} | Entry: {entry:.2f}")
@@ -395,14 +413,21 @@ class Trader:
         correct = price_diff > 0
 
         if pos.get("ticket"):
+            close_res = None
             try:
-                await self.provider.close_position(pos["ticket"])
+                close_res = await self.provider.close_position(pos["ticket"])
             except Exception as e:
                 self.log(type="ERROR", msg=f"close failed {sym}: {e}")
-            # broker-truth P&L from the closing deal (incl. swap/commission);
-            # falls back to the estimate if the deal can't be found yet — the
-            # broker's history index lags a close by minutes, so queue a retry
-            if hasattr(self.provider, "get_closed_deal"):
+            # Broker-truth P&L, best source first:
+            #   1. the closing deal itself (returned by close_position — indexed instantly)
+            #   2. position-history search (lags minutes → queue a deferred fix)
+            #   3. spread-blind estimate (last resort; corrected later if the deal appears)
+            if close_res and close_res.get("pnl") is not None:
+                pnl = close_res["pnl"]
+                if close_res.get("price"):
+                    exit_price = close_res["price"]
+                correct = pnl > 0
+            elif hasattr(self.provider, "get_closed_deal"):
                 try:
                     deal = self.provider.get_closed_deal(pos["ticket"])
                 except Exception:
@@ -436,7 +461,8 @@ class Trader:
                 f"{'🟢' if correct else '🔴'} CLOSE {sym} {pos['direction']} ({reason})\n"
                 f"P&L: ${pnl:+.2f} ({result_str})\n"
                 f"Balance: ${bal:.2f}\n"
-                f"Weekly P&L: ${self.sentinel.weekly_pnl:.2f} / ${runtime.weekly_goal:.2f}")
+                f"Weekly P&L: ${self.sentinel.weekly_pnl:.2f} / ${runtime.weekly_goal:.2f}",
+                reply_to=pos.get("tg_msg_id"))
         except Exception:
             pass
 
@@ -493,6 +519,18 @@ class Trader:
                      entry=round(pos["entry_price"], 2), exit=round(exit_price, 2),
                      pnl=f"${pnl:+.2f}", result=("WIN ✅" if correct else "LOSS ❌"),
                      weekly_pnl=f"${self.sentinel.weekly_pnl:.2f}")
+            # SL hits / manual closes land here — without this they'd close silently
+            # and Telegram would only ever report the wins (loss trades "vanish")
+            bal = await self.get_balance()
+            try:
+                await send_telegram(
+                    f"{'🟢' if correct else '🔴'} CLOSE {sym} {pos['direction']} (SL/external)\n"
+                    f"P&L: ${pnl:+.2f} ({'WIN ✅' if correct else 'LOSS ❌'})\n"
+                    f"Balance: ${bal:.2f}\n"
+                    f"Weekly P&L: ${self.sentinel.weekly_pnl:.2f} / ${runtime.weekly_goal:.2f}",
+                    reply_to=pos.get("tg_msg_id"))
+            except Exception:
+                pass
             try:
                 db.log_trade_close(pos.get("trade_id"), exit_price, pnl, result)
             except Exception:
@@ -725,6 +763,7 @@ class Trader:
                             runtime.persist()
                             self.log(type="WEEK_SNAPSHOT", monday=wk_iso,
                                      week_start_balance=runtime.week_start_balance,
+                                     cash_at_snapshot=cash, realized=real,
                                      msg="balance snapshot for balance-based weekly P&L")
                         cash = self.provider.cashflow_since(wk_ts) or 0.0
                         weekly_pnl = round(acct["balance"] - runtime.week_start_balance - cash, 2)
@@ -831,6 +870,15 @@ class Trader:
                 idx = int(ts.searchsorted(due))
                 if idx >= len(candles):
                     continue   # candle not available yet; retry next pass
+                # Staleness guard: the matched candle must actually COVER the due time
+                # (within one interval). Closed-market weekends used to resolve against
+                # the nearest stale candle — XAUUSD scored a fake 100% on Sat/Sun and
+                # poisoned the Watcher's drift window. Never score a stale resolution.
+                candle_dt = ts.iloc[idx]
+                gap_min = abs((candle_dt - due).total_seconds()) / 60.0
+                if gap_min > 2 * 5:   # > 2 candle-intervals off → stale market data
+                    db.resolve_evaluation(r["id"], "stale", None, None)
+                    continue
                 actual = float(candles["close"].iloc[idx])
                 base = float(r["current_close"] or 0) or actual
                 actual_move = (actual - base) / base

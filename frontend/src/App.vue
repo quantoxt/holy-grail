@@ -4,6 +4,7 @@ import Dashboard from './views/Dashboard.vue'
 import Trades from './views/Trades.vue'
 import Risk from './views/Risk.vue'
 import Config from './views/Config.vue'
+import Journal from './views/Journal.vue'
 import { supabase } from './lib/supabase'
 
 const status = ref<any>({})
@@ -16,6 +17,7 @@ const navItems = [
   { id: 'trades', label: 'Trades' },
   { id: 'risk', label: 'Risk' },
   { id: 'config', label: 'Config' },
+  { id: 'journal', label: 'Journal' },
 ]
 
 const fetchStatus = async () => {
@@ -58,6 +60,7 @@ const symsLabel = computed(() => (status.value.symbols ?? []).join(', ') || '…
       <Dashboard v-if="view === 'dashboard'" />
       <Trades v-else-if="view === 'trades'" />
       <Risk v-else-if="view === 'risk'" />
+      <Journal v-else-if="view === 'journal'" />
       <Config v-else-if="view === 'config'" />
     </main>
   </div>

@@ -388,8 +388,23 @@ class MT5Provider(MarketProvider):
             if not (res and res.retcode == 10030):
                 break
         ok = res and res.retcode == mt5.TRADE_RETCODE_DONE
+        # Broker-truth P&L straight from the closing deal. The deal's own ticket is
+        # indexed immediately (unlike position-history searches, which lag minutes),
+        # so the loop can report the REAL pnl (incl. spread cost, swap, commission)
+        # instead of a spread-blind price-diff estimate that shows profit on losers.
+        pnl = price = None
+        if ok and getattr(res, "deal", 0):
+            try:
+                d = mt5.history_deals_get(ticket=res.deal)
+                if d:
+                    pnl = (float(d[0].profit) + float(getattr(d[0], "commission", 0.0))
+                           + float(getattr(d[0], "swap", 0.0)) + float(getattr(d[0], "fee", 0.0)))
+                    price = float(d[0].price)
+            except Exception:
+                pass
         return {"id": position_id, "status": "closed" if ok else "failed",
-                "retcode": res.retcode if res else None}
+                "retcode": res.retcode if res else None,
+                "pnl": pnl, "price": price}
 
     # --- account ---
     async def get_balance(self):
