@@ -42,6 +42,10 @@ class RuntimeConfig:
                                         # of evals, which is why trades rode to horizon. Lower to ~0.5 for
                                         # shorter holds (dashboard-adjustable).
     tp_vol_mult: float = 0.0            # >0 overrides the predicted target: target = entry ± mult × horizon-vol
+    tp_rr_mult: float = 2.0               # TP = entry ± rr_mult × SL distance (R-multiple target).
+                                          # Risking $10 to make $2.5 needs 80% wins — we have 50%. At 1:2
+                                          # the math works even on a coin flip (breakeven at 33%). Takes
+                                          # precedence over tp_vol_mult/tp_fraction when > 0.
     tp_vol_mults: dict = field(default_factory=dict)  # per-symbol override of tp_vol_mult (e.g. {"XAUUSD": 1.5}) — 0.7σ is
                                         # spread-scale on quiet metals/forex → the bot scalps itself broke
     tp_min_spread_mult: float = 3.0     # target must sit at least this many spreads from the FILL price —

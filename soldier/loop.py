@@ -139,7 +139,13 @@ class Trader:
         # Phase 1: Resolve matured positions (h=pred_len horizon elapsed)
         await self._resolve_positions()
 
-        # Phase 2: Kill switch (equity-aware; may demand close-all)
+        # Phase 2: Kill switch (equity-aware; may demand close-all).
+        # Daily/weekly resets run BEFORE the kill check — if they only ran in the
+        # open path, a latched daily-loss kill would never see a new day and the
+        # bot would zombie-loop on a stale number forever (2026-08-21: 62 kills
+        # over 3 dead days).
+        today = datetime.now(timezone.utc).date()
+        self.sentinel.check_time_resets(today)
         bal, equity, floating = await self._balance_equity_floating()
         killed, kreason, close_all = self.sentinel.check_kill(
             equity, len(self.open), symbols=runtime.active_symbols,
@@ -233,10 +239,8 @@ class Trader:
                          reason=f"low_snr {sig['snr']:.2f} < {settings.snr_min}")
                 continue
 
-            # Compute risk + lot
-            candle_date = datetime.now(timezone.utc).date()
-            self.sentinel.check_time_resets(candle_date)
-            risk = self.sentinel.risk_amount(sig["confidence"], candle_date)
+            # Compute risk + lot (day rollover already handled in Phase 2)
+            risk = self.sentinel.risk_amount(sig["confidence"], today)
             spec = await self.provider.get_symbol_info(sym)
             entry = sig["current_close"]   # proxy for sizing; the FILL price is adopted after the order
             lot = self.sentinel.lot_size(
@@ -286,13 +290,21 @@ class Trader:
             # a target computed off a stale entry fires instantly (spread-scale scalping).
             fill = result.get("entry_price") or entry
             direction_sign_open = 1 if sig["direction"] == "BUY" else -1
-            # Per-symbol TP multiplier: quiet instruments (metals/forex) need a wider
-            # multiple or the 0.7σ global sits inside the spread.
+            # TP sizing, best mode first:
+            #   1. R-multiple (default): target = entry ± tp_rr_mult × SL distance. At
+            #      1:2 R:R a 34% win rate profits — the only sizing whose economics
+            #      survive a coin-flip edge. Kronos magnitude is noise (corr≈0), so the
+            #      target is anchored to the RISK we're actually taking, not the forecast.
+            #   2. vol-multiple (per-symbol override of tp_vol_mult)
+            #   3. fraction of the predicted move (tp_fraction)
             _tp_mult = (runtime.tp_vol_mults or {}).get(sym, runtime.tp_vol_mult)
-            target_price = (
-                fill + (_tp_mult * sig["vol"] * fill)
-                if (_tp_mult > 0 and sig.get("vol"))
-                else fill + runtime.tp_fraction * (sig["predicted_close"] - fill))
+            sl_dist_fill = abs(fill - sig["sl_price"]) if sig["sl_price"] else 0.0
+            if runtime.tp_rr_mult > 0 and sl_dist_fill > 0:
+                target_price = fill + direction_sign_open * runtime.tp_rr_mult * sl_dist_fill
+            elif _tp_mult > 0 and sig.get("vol"):
+                target_price = fill + direction_sign_open * _tp_mult * sig["vol"] * fill
+            else:
+                target_price = fill + runtime.tp_fraction * (sig["predicted_close"] - fill)
             # Spread floor: a target closer than a few spreads from the fill is a
             # guaranteed net loss even when "hit" — push it out.
             spread_now = self.provider.get_spread(sym)
@@ -767,6 +779,18 @@ class Trader:
                                      msg="balance snapshot for balance-based weekly P&L")
                         cash = self.provider.cashflow_since(wk_ts) or 0.0
                         weekly_pnl = round(acct["balance"] - runtime.week_start_balance - cash, 2)
+                        # Self-heal: an account funded mid-week BEFORE the broker indexes
+                        # the deposit deal snapshots too high, then double-subtracts the
+                        # deposit when it appears (JM-3 showed -$548 on a -$49 week). A
+                        # weekly loss deeper than the drawdown cap is impossible —
+                        # re-snapshot from (now-complete) history.
+                        if weekly_pnl < -(runtime.max_weekly_drawdown + 100):
+                            self.log(type="WEEK_RESNAP", weekly=weekly_pnl,
+                                     msg="implausible weekly P&L — re-snapshotting")
+                            real = self.provider.realized_since(wk_ts) or 0.0
+                            runtime.week_start_balance = round(acct["balance"] - cash - real, 2)
+                            runtime.persist()
+                            weekly_pnl = round(acct["balance"] - runtime.week_start_balance - cash, 2)
                         # keep Sentinel on broker truth so Telegram + kill checks
                         # agree with the dashboard card
                         self.sentinel.weekly_pnl = weekly_pnl
