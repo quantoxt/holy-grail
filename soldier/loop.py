@@ -577,10 +577,9 @@ class Trader:
 
     def _manage_exits(self, broker_positions):
         """Per-position SL management, called from telemetry every ~5s. Two tiers:
-          1. profit-lock: once floating profit >= profit_lock_target, ratchet SL to
-             lock max(profit_lock_min, peak_profit × profit_lock_fraction) of the gain.
-          2. breakeven-lock: else, once favorable >= breakeven_lock_mult×|move|, slide
-             SL to ~entry (downside only).
+          1. breakeven: once floating >= breakeven_lock_r × R, slide SL to ~entry.
+          2. trail: once floating >= profit_lock_r × R (1R), ratchet SL to trail
+             trail_slack_r behind the live profit (at 1R = BE, at 1.5R = +0.5R...).
         Ratchets only (never widens). h=24 still the max hold. Uses the broker's
         live profit/price so it works for positions recovered after a restart."""
         if not self.open:
@@ -613,9 +612,16 @@ class Trader:
             be_target = (runtime.breakeven_lock_r * risk_ref) if risk_ref > 0 else None
 
             if profit >= trail_target:
-                locked = max((min(runtime.profit_lock_min, 0.5 * risk_ref) if risk_ref > 0
-                              else runtime.profit_lock_min),
-                             pos["peak_profit"] * runtime.profit_lock_fraction)
+                # R-ladder (2026-08-25): once past profit_lock_r (1R), the SL trails
+                # trail_slack_r behind the LIVE profit — at 1R that's breakeven, at
+                # 1.5R it locks +0.5R, and only the 2R TP is a full "win". Outcomes:
+                # -1R / ~$0 scratch / locked-r / +2R. Replaces the early half-gain
+                # lock that was closing winners at $2-3.
+                if risk_ref > 0:
+                    locked = max(0.0, profit - runtime.trail_slack_r * risk_ref)
+                else:  # fixed-$ fallback when actual risk unknown
+                    locked = max(runtime.profit_lock_min,
+                                 pos["peak_profit"] * runtime.profit_lock_fraction)
                 # SL price that realizes exactly `locked` of profit if hit
                 new_sl = (entry + locked / unit) if direction == "BUY" else (entry - locked / unit)
             elif be_target is not None:

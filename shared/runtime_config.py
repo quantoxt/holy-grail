@@ -27,11 +27,11 @@ class RuntimeConfig:
 
     # --- risk guardrails ---
     max_risk_per_trade: float = 1.0     # reference risk (actual is min-lot-bound, see below)
-    max_daily_loss: float = 3.0         # $3 daily loss cap
+    max_daily_loss: float = 15.0        # daily loss cap ≈ 2 full SL hits at the 1.5% risk cap
     max_weekly_drawdown: float = 10.0   # stop if equity <= $40
     max_open_positions: int = 2         # limit correlated exposure
     sl_multiplier: float = 2.0          # fallback SL = sl_multiplier × |move| (only when vol=0)
-    sl_atr_mult: float = 2.0            # default SL = sl_atr_mult × realized horizon-vol (ATR-based)
+    sl_atr_mult: float = 1.0            # default SL = sl_atr_mult × realized horizon-vol (ATR-based)
     sl_atr_mults: dict = field(default_factory=lambda: {"XAGUSD": 1.0})  # per-symbol overrides (tighter for volatile instruments so they fit the cap)
     max_move_pct: float = 0.015         # plausibility cap: reject |predicted_move| > 1.5% (long-shots)
     min_confidence: float = 0.50        # skip signals below this confidence (observed: sub-50% trades lose)
@@ -59,7 +59,7 @@ class RuntimeConfig:
     # Brokers floor lot to 0.01, so the $-at-SL is whatever min-lot dictates, NOT
     # max_risk_per_trade. We accept that (scale to min-lot) but cap each trade's
     # actual $-at-SL at risk_cap_pct of equity — refuse suicide, don't refuse trade.
-    risk_cap_pct: float = 0.03          # skip if actual $-at-SL > 3% of equity
+    risk_cap_pct: float = 0.015         # skip if actual $-at-SL > 1.5% of equity (~$7.5 at $500)
 
     # --- goal-aware exit (reverses the old "no TP" lock) ---
     # Hard weekly ceiling: baseline + weekly_goal. Once LIVE EQUITY (incl. floating)
@@ -69,9 +69,10 @@ class RuntimeConfig:
     # max(profit_lock_min, peak_profit × profit_lock_fraction) of the gain.
     profit_lock_target: float = 5.0     # fixed fallback: floating-$ at which trailing engages
     profit_lock_min: float = 2.0        # fixed fallback: minimum $ profit locked once trailing on
-    profit_lock_fraction: float = 0.5   # lock this fraction of peak favorable $
-    profit_lock_r: float = 0.8          # trailing engages at floating >= this × actual $-at-SL (R)
-    breakeven_lock_r: float = 0.4       # SL→entry at floating >= this × R (before full trailing)
+    profit_lock_fraction: float = 0.5   # fixed fallback: lock this fraction of peak favorable $
+    profit_lock_r: float = 1.0          # trailing engages at floating >= this × actual $-at-SL (R)
+    trail_slack_r: float = 1.0          # once trailing, SL stays this many R behind live profit
+    breakeven_lock_r: float = 0.5       # SL→entry at floating >= this × R (before full trailing)
 
     # --- dynamic adjustments ---
     thursday_aggression: bool = True    # boost risk to $1.50 on Thursday if behind

@@ -314,18 +314,18 @@ class MT5Provider(MarketProvider):
         return None
 
     def realized_since(self, ts):
-        """Broker-truth realized P&L (profit + commission + swap) for OUR magic's
-        deals since timestamp `ts` (epoch seconds). Sums both IN (commission on
-        entry) and OUT deals. Returns None if history is unavailable. This is the
-        number the dashboard's weekly card should show — recomputing from the
-        trades table drifts (price-diff estimates miss swap/commission)."""
+        """Broker-truth realized P&L (profit + commission + swap) for ALL trading
+        deals since timestamp `ts` (epoch seconds), regardless of magic — manual
+        closes from the terminal carry magic 0 and are still this account's P&L
+        (the Net P&L card used to miss them). Balance operations (deposits) have
+        no symbol and are naturally excluded. Returns None if history is unavailable."""
         try:
             from datetime import datetime, timezone
             deals = mt5.history_deals_get(datetime.fromtimestamp(ts, timezone.utc),
                                           datetime.now(timezone.utc))
             total = 0.0
             for d in (deals or []):
-                if getattr(d, "magic", 0) != MAGIC or d.time < ts:
+                if not d.symbol or d.time < ts:
                     continue
                 total += float(d.profit) + float(getattr(d, "commission", 0.0)) \
                     + float(getattr(d, "swap", 0.0))
