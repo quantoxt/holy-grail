@@ -1,15 +1,68 @@
 @import "tailwindcss";
+@import "@fontsource-variable/bricolage-grotesque";
+@import "@fontsource-variable/instrument-sans";
 
+/* "Trail to the summit" — moss, pine and honey on sage linen. Cozy, calm, legible.
+   Token names --bg/--card/--border/--text/--muted/--primary/--profit/--loss/--warning
+   are kept so older views (Journal) restyle automatically. */
 :root {
-  --bg: #09090b;
-  --card: #18181b;
-  --border: #27272a;
-  --text: #fafafa;
-  --muted: #71717a;
-  --primary: #8b5cf6;
-  --profit: #10b981;
-  --loss: #ef4444;
-  --trending: #10b981;
-  --choppy: #71717a;
-  --warning: #f59e0b;
+  --bg: #e8ece3;          /* sage linen */
+  --card: #f5f7f1;        /* raised surface */
+  --sunk: #dde3d6;        /* inset / track groove */
+  --border: #cfd7c8;
+  --text: #1d2a26;        /* pine ink */
+  --muted: #64736c;
+  --primary: #2e5e4e;     /* pine */
+  --primary-ink: #f5f7f1;
+  --honey: #c98a1c;       /* the walker, highlights */
+  --profit: #2f7a55;
+  --loss: #a8435a;        /* berry */
+  --warning: #b9771a;
+  --font-display: "Bricolage Grotesque Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "Instrument Sans Variable", ui-sans-serif, system-ui, sans-serif;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #131b18;
+    --card: #1a2420;
+    --sunk: #0f1613;
+    --border: #2a3731;
+    --text: #e6ece5;
+    --muted: #8d9b94;
+    --primary: #79bfa2;
+    --primary-ink: #10201a;
+    --honey: #e6ae4a;
+    --profit: #6fc394;
+    --loss: #e2829a;
+    --warning: #e3a648;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #131b18;
+  --card: #1a2420;
+  --sunk: #0f1613;
+  --border: #2a3731;
+  --text: #e6ece5;
+  --muted: #8d9b94;
+  --primary: #79bfa2;
+  --primary-ink: #10201a;
+  --honey: #e6ae4a;
+  --profit: #6fc394;
+  --loss: #e2829a;
+  --warning: #e3a648;
+  color-scheme: dark;
+}
+
+html, body { background: var(--bg); color: var(--text); font-family: var(--font-body); }
+body { -webkit-font-smoothing: antialiased; }
+.font-display { font-family: var(--font-display); }
+.num { font-variant-numeric: tabular-nums; }
+
+:focus-visible { outline: 2px solid var(--honey); outline-offset: 2px; border-radius: 6px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
 }

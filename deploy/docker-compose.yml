@@ -1,0 +1,73 @@
+# Holy Grail on a Linux VPS: MT5 under Wine + the bot. See deploy/README.md.
+#   docker compose -f deploy/docker-compose.yml up -d --build
+#
+# Exposure: NOTHING is published on a public interface. The only published port is
+# the KasmVNC desktop on 127.0.0.1:3000 (reach it over an SSH tunnel). The RPyC
+# bridge (18812) is reachable only from containers on the `holygrail` network.
+# The network is not `internal: true` because both services need egress (broker
+# servers, Supabase, Telegram, Hugging Face).
+
+name: holygrail
+
+services:
+  mt5:
+    build:
+      context: ..
+      dockerfile: deploy/mt5/Dockerfile
+    image: holygrail-mt5:2.3
+    restart: unless-stopped
+    env_file: .env.mt5            # CUSTOM_USER / PASSWORD for the VNC desktop (gitignored)
+    environment:
+      BRIDGE_PORT: "18812"
+      MT5_PY_VERSION: "5.0.36"
+      RPYC_VERSION: "6.0.2"       # keep == the rpyc pin in deploy/Dockerfile
+      TZ: Etc/UTC
+      # MT5 is native code: skip Wine's Mono/Gecko download prompts, which block
+      # startup headlessly after a Wine upgrade refreshes the prefix.
+      WINEDLLOVERRIDES: "mscoree=d;mshtml=d"
+    volumes:
+      - mt5_config:/config        # Wine prefix, terminal, login, AutoTrading state
+    ports:
+      - "127.0.0.1:3000:3000"     # KasmVNC web UI — localhost only, use an SSH tunnel
+    expose:
+      - "18812"
+    shm_size: "1gb"
+    networks: [holygrail]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import socket; socket.create_connection(('127.0.0.1', 18812), 3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15m           # first boot installs Mono, MT5 and Wine Python
+
+  bot:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: holygrail-bot:local
+    restart: unless-stopped
+    env_file: ../.env             # Supabase URL + service key, Telegram (gitignored)
+    environment:
+      MT5_HOST: mt5
+      MT5_PORT: "18812"
+      TZ: Etc/UTC
+    command: ["python", "-m", "soldier.loop", "--interval", "300"]
+    depends_on:
+      mt5:
+        condition: service_healthy
+    volumes:
+      - bot_data:/app/data        # bot_log.jsonl audit log
+      - hf_cache:/hf-cache        # Kronos weights (downloaded once)
+    networks: [holygrail]
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+networks:
+  holygrail:
+    driver: bridge
+
+volumes:
+  mt5_config:
+  bot_data:
+  hf_cache:

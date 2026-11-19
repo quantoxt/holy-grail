@@ -100,7 +100,7 @@ const banksThisMonth = computed(() => {
   return banks.value.filter((b) => b.created_at.startsWith(prefix))
 })
 
-const selectedBank = computed(() => (selected.value ? byDay[selected.value] : null))
+const selectedBank = computed(() => (selected.value ? byDay.value[selected.value] : null))
 const selectedHours = computed(() =>
   selectedBank.value ? hoursToGoal(selectedBank.value.created_at) : null)
 const hasEntry = computed(() => !!(selected.value && entries.value[selected.value]))

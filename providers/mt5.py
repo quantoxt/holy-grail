@@ -10,7 +10,13 @@ already-running terminal session.
 Size is USDT/USD notional at the interface; converted to LOTS per the symbol's
 contract size (e.g. 100 oz gold, 100k base forex).
 """
-import MetaTrader5 as mt5  # noqa: E402  (Windows/Wine + terminal required)
+try:
+    import MetaTrader5 as mt5  # noqa: E402  (Windows native + terminal)
+except ImportError:
+    # Linux (Docker VPS): the terminal runs under Wine in the `mt5` container;
+    # calls go over RPyC (MT5_HOST/MT5_PORT). Same API, plain local results.
+    from providers.mt5_bridge import connect_from_env
+    mt5 = connect_from_env()
 import pandas as pd
 import threading
 import time

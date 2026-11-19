@@ -1,0 +1,22 @@
+# BuildKit picks this up for deploy/Dockerfile (context = repo root).
+# Keep secrets, venvs, research data and the frontend out of the bot image.
+.git
+.env
+.env.*
+*.env
+**/.env
+venv*
+.venv
+**/__pycache__
+**/*.pyc
+_archive
+_internal
+_fine-tuned-models
+frontend
+supabase
+data
+research
+tests
+deploy
+!deploy/smoke_mt5.py
+*.log

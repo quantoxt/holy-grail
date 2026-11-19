@@ -107,6 +107,29 @@ class RuntimeConfig:
     # --- symbols (runtime-adjustable) ---
     active_symbols: list = field(default_factory=lambda: ["XAUUSD", "XAGUSD", "EURUSD", "GBPUSD"])
 
+    # --- account mode: "weekly" (Sentinel v2 goal/ceiling/withdraw) | "prop" ---
+    # Prop mode (The5ers Bootcamp step 1) replaces the weekly goal/ceiling/withdraw
+    # logic with a one-shot pass/fail evaluation against a STATIC start balance:
+    #   pass  : equity >= prop_start_balance + prop_target                 ($5,300)
+    #   fail  : equity <= prop_start_balance - prop_max_loss + floor_buffer ($4,800,
+    #           $50 above The5ers' own $4,750 line so slippage can't breach theirs)
+    # prop_status is a PERSISTED latch: once passed/failed, a restart never resumes
+    # trading. Next evaluation step = set the new start balance + prop_status="active".
+    account_mode: str = "weekly"
+    prop_start_balance: float = 5000.0
+    prop_target: float = 300.0
+    prop_max_loss: float = 250.0
+    prop_floor_buffer: float = 50.0
+    prop_status: str = "active"         # "active" | "passed" | "failed"
+    risk_pct_per_trade: float = 0.005   # prop: fixed $-risk = start balance × this ($25), NOT
+                                        # live equity — consistent sizing (The5ers bans erratic lots)
+
+    # --- SL-modify throttle (The5ers bans excessive server requests) ---
+    sl_modify_min_step_r: float = 0.25     # an SL edit must move the stop >= this × R (price);
+                                           # the breakeven move is exempt (single event)
+    sl_modify_min_interval_s: float = 60.0  # >= this many seconds between edits per position
+    sl_modify_max_per_hour: int = 10        # <= this many edit attempts per position per rolling hour
+
     _lock: Lock = field(default_factory=Lock, repr=False)
     _client: object = field(default=None, repr=False)
 
@@ -186,6 +209,31 @@ class RuntimeConfig:
             self.max_open_positions = min(5, max(1, int(weekly_goal / (risk * 2))))
         self.persist()
         return self.snapshot()
+
+    def apply_prop_profile(self):
+        """Switch to the The5ers prop profile (PROP_PROFILE) and persist it.
+        Explicit opt-in — code defaults stay weekly-mode so an existing bot_config
+        row/behaviour is unchanged until someone flips it."""
+        self.update(**PROP_PROFILE)
+        return self.snapshot()
+
+
+# The5ers Bootcamp step-1 profile ($5,000 start, +$300 pass, $4,750 static fail).
+# Applied via runtime.apply_prop_profile() or the same keys PATCHed from the dashboard.
+PROP_PROFILE = {
+    "account_mode": "prop",
+    "prop_start_balance": 5000.0,
+    "prop_target": 300.0,
+    "prop_max_loss": 250.0,
+    "prop_floor_buffer": 50.0,
+    "prop_status": "active",
+    "risk_pct_per_trade": 0.005,
+    "max_daily_loss": 75.0,            # self-imposed (The5ers has none in steps 1-3)
+    "active_symbols": ["XAUUSD", "GBPUSD", "BTCUSD"],
+    "max_open_positions": 2,
+    "thursday_aggression": False,
+    "withdraw_profit_weekly": False,
+}
 
 
 # singleton — imported everywhere

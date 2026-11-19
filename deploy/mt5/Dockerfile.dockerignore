@@ -1,0 +1,4 @@
+# Context = repo root; this image only needs the two files under deploy/mt5/.
+*
+!deploy/mt5/start.sh
+!deploy/mt5/bridge_server.py

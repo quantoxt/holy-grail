@@ -154,6 +154,8 @@ class Trader:
         if killed:
             if close_all and self.open:
                 await self._close_all(f"kill:{kreason}")
+            if close_all and kreason.startswith(("prop_passed", "prop_failed")):
+                await self._prop_alert(kreason.split(" ")[0], equity)
             self.log(type="KILL", reason=kreason, bal=bal, equity=equity,
                      weekly_pnl=f"${self.sentinel.weekly_pnl:.2f}")
             try:
@@ -575,7 +577,26 @@ class Trader:
                      exit=deal["price"], msg="trades row corrected with broker deal")
         self.pending_deals = still_pending
 
-    def _manage_exits(self, broker_positions):
+    def _sl_mod_allowed(self, pos, new_sl, r_price, is_breakeven, now):
+        """Throttle SL edits (The5ers bans excessive server requests). All three:
+          1. the stop moves >= sl_modify_min_step_r × R in price (breakeven exempt),
+          2. >= sl_modify_min_interval_s since this position's last edit,
+          3. < sl_modify_max_per_hour edits in the rolling hour.
+        Returns (allowed, reason)."""
+        cur_sl = pos.get("sl_price")
+        if not is_breakeven and cur_sl and r_price > 0:
+            if abs(new_sl - cur_sl) < runtime.sl_modify_min_step_r * r_price:
+                return False, "step"
+        last = pos.get("last_sl_mod_ts")
+        if last is not None and now - last < runtime.sl_modify_min_interval_s:
+            return False, "interval"
+        recent = [t for t in pos.get("sl_mod_ts_hour", []) if now - t < 3600]
+        pos["sl_mod_ts_hour"] = recent
+        if len(recent) >= runtime.sl_modify_max_per_hour:
+            return False, "hourly_cap"
+        return True, ""
+
+    def _manage_exits(self, broker_positions, now=None):
         """Per-position SL management, called from telemetry every ~5s. Two tiers:
           1. breakeven: once floating >= breakeven_lock_r × R, slide SL to ~entry.
           2. trail: once floating >= profit_lock_r × R (1R), ratchet SL to trail
@@ -584,6 +605,7 @@ class Trader:
         live profit/price so it works for positions recovered after a restart."""
         if not self.open:
             return
+        now = time.time() if now is None else now
         by_sym = {p["symbol"]: p for p in broker_positions}
         for sym, pos in list(self.open.items()):
             bp = by_sym.get(sym)
@@ -602,6 +624,7 @@ class Trader:
                 continue
             cur_sl = pos.get("sl_price")
             new_sl = None
+            is_breakeven = False
 
             # Thresholds are R-based when the trade's actual $-at-SL is known:
             # min-lot trades float only ±$1-2 on BTC, so the old FIXED $5 trigger
@@ -627,6 +650,7 @@ class Trader:
             elif be_target is not None:
                 if profit >= be_target:
                     new_sl = entry * (0.9999 if direction == "BUY" else 1.0001)
+                    is_breakeven = True
             elif settings.breakeven_lock:
                 move = pos.get("move")
                 if move:
@@ -634,6 +658,7 @@ class Trader:
                     threshold = settings.breakeven_lock_mult * abs(move) * entry
                     if favorable_price >= threshold:
                         new_sl = entry * (0.9999 if direction == "BUY" else 1.0001)
+                        is_breakeven = True
 
             if new_sl is None:
                 continue
@@ -649,6 +674,15 @@ class Trader:
                 tighter = (new_sl > cur_sl) if direction == "BUY" else (new_sl < cur_sl)
                 if not tighter:
                     continue
+            # R in PRICE terms: $-at-SL / ($ per price unit). Recovered positions
+            # have no actual_risk → fall back to the current SL distance from entry.
+            r_price = (risk_ref / unit) if risk_ref > 0 else (abs(entry - cur_sl) if cur_sl else 0.0)
+            ok, why = self._sl_mod_allowed(pos, new_sl, r_price, is_breakeven, now)
+            if not ok:
+                continue
+            # count the ATTEMPT (a rejected modify is still a server request)
+            pos["last_sl_mod_ts"] = now
+            pos.setdefault("sl_mod_ts_hour", []).append(now)
             try:
                 if self.provider.modify_sl(ticket, new_sl):
                     pos["sl_price"] = new_sl
@@ -677,9 +711,25 @@ class Trader:
                 await self._close_position(sym, pos, exit_price=cur, reason="target")
 
     async def _maybe_bank_goal(self, equity, floating):
-        """If the weekly goal is reached in equity (incl. floating) or realized+
-        floating PnL, close ALL positions and latch the stop for the week. Called
-        from telemetry so it reacts in ~5s, not the 300s cycle."""
+        """Called from telemetry every ~5s (the 300s cycle is far too slow to stop
+        a breach). Weekly mode: if the weekly goal is reached in equity (incl.
+        floating) or realized+floating PnL, close ALL positions and latch the stop
+        for the week. Prop mode: pass ($start+target) / our floor ($start−max_loss+
+        buffer) → latch prop_status (persisted), close everything, alert."""
+        if self.sentinel.is_prop():
+            status, newly = self.sentinel.check_prop(equity)
+            if status == "active":
+                return
+            self.kill_latched = True   # orphan closer keeps the book flat from now on
+            if newly:
+                self.log(type="PROP", status=status, equity=equity,
+                         msg=f"prop evaluation {status} — closing all, trading stopped")
+                if self.open:
+                    await self._close_all(f"prop_{status}")
+                await self._prop_alert(f"prop_{status}", equity)
+            elif self.open:
+                await self._close_all(f"prop_{status}")   # latched: never hold a position
+            return
         ceiling = runtime.baseline_equity + runtime.weekly_goal
         reached = (equity >= ceiling) or ((self.sentinel.weekly_pnl + floating) >= runtime.weekly_goal)
         if not reached or not self.open or self.sentinel.weekly_goal_locked:
@@ -697,6 +747,25 @@ class Trader:
             await send_telegram(
                 f"🎯 Weekly goal banked (${runtime.weekly_goal:.2f}). "
                 f"Closing all positions — resting for the week.")
+        except Exception:
+            pass
+
+    async def _prop_alert(self, reason, equity):
+        """Risk event + Telegram for a NEW prop pass/fail latch (sent once)."""
+        pass_eq, floor_eq = self.sentinel.prop_levels()
+        try:
+            db.log_risk_event(reason, f"equity ${equity:.2f} (pass ${pass_eq:.2f}, "
+                              f"floor ${floor_eq:.2f})", {"equity": equity})
+        except Exception:
+            pass
+        if reason == "prop_passed":
+            msg = (f"🏆 Prop evaluation PASSED — equity ${equity:.2f} >= ${pass_eq:.2f}. "
+                   f"All positions closed, trading stopped.")
+        else:
+            msg = (f"🛑 Prop evaluation FAILED-SAFE — equity ${equity:.2f} <= our floor "
+                   f"${floor_eq:.2f}. All positions closed, trading stopped.")
+        try:
+            await send_telegram(msg)
         except Exception:
             pass
 
@@ -984,9 +1053,18 @@ def main():
     p.add_argument("--account", default=None)
     args = p.parse_args()
     trader = Trader(account=args.account)
+    runtime.refresh()   # print the dashboard's saved config, not code defaults
     print(f"Holy Grail | LIVE | symbols={runtime.active_symbols} "
           f"tf={settings.timeframe} goal=${runtime.weekly_goal} "
           f"ceiling=${runtime.baseline_equity + runtime.weekly_goal}", flush=True)
+    if runtime.account_mode == "prop":
+        start = runtime.prop_start_balance
+        print(f"PROP MODE | status={runtime.prop_status} start=${start:.2f} "
+              f"risk/trade=${start * runtime.risk_pct_per_trade:.2f} "
+              f"daily_cap=${runtime.max_daily_loss:.2f}", flush=True)
+        print(f"  PASS at equity >= ${start + runtime.prop_target:.2f} | "
+              f"FAIL-SAFE at equity <= ${start - runtime.prop_max_loss + runtime.prop_floor_buffer:.2f} "
+              f"(broker fail line ${start - runtime.prop_max_loss:.2f})", flush=True)
     asyncio.run(trader.run(cycles=args.cycles, interval_sec=args.interval))
 if __name__ == "__main__":
     main()

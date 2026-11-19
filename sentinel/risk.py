@@ -41,6 +41,10 @@ class Sentinel:
         self.last_week_start: date | None = None
         self.weekly_withdrawn = 0.0
         self.weekly_goal_locked = False   # latched once the $-ceiling is banked this week
+        # prop mode: in-process copy of the pass/fail latch, keyed to the start
+        # balance it was earned on. Guards against a failed persist() — refresh()
+        # would otherwise read the stale "active" row back and resume trading.
+        self._prop_latch: tuple[str, float] | None = None
         # stats
         self.total_trades = 0
         self.wins = 0
@@ -55,6 +59,7 @@ class Sentinel:
         self.total_trades = 0
         self.wins = 0
         self.weekly_goal_locked = False
+        self._prop_latch = None   # new login → the persisted prop_status row rules
         self.last_day = None
         self.last_week_start = None
 
@@ -75,7 +80,8 @@ class Sentinel:
         # weekly reset (Monday of a new week)
         week_start = current_date - timedelta(days=current_date.weekday())
         if week_start > self.last_week_start:
-            if self.cfg.withdraw_profit_weekly and self.weekly_pnl > 0:
+            if (not self.is_prop() and self.cfg.withdraw_profit_weekly
+                    and self.weekly_pnl > 0):
                 self.weekly_withdrawn += self.weekly_pnl
                 print(f"[Sentinel] weekly reset: withdrew ${self.weekly_pnl:.2f}, "
                       f"total withdrawn ${self.weekly_withdrawn:.2f}")
@@ -84,6 +90,59 @@ class Sentinel:
             self.consecutive_losses = 0
             self.weekly_goal_locked = False
             self.last_week_start = week_start
+
+    # ---- prop mode (The5ers evaluation) ----
+
+    def is_prop(self) -> bool:
+        return self.cfg.account_mode == "prop"
+
+    def prop_levels(self) -> tuple[float, float]:
+        """(pass_equity, our_floor_equity) — e.g. ($5,300, $4,800)."""
+        start = self.cfg.prop_start_balance
+        return (start + self.cfg.prop_target,
+                start - self.cfg.prop_max_loss + self.cfg.prop_floor_buffer)
+
+    def check_prop(self, equity: float) -> tuple[str, bool]:
+        """Evaluate + latch the prop pass/fail. Returns (status, newly_latched).
+        Called from check_kill (300s cycle) AND the loop's 5s telemetry, so a
+        breach toward the $4,750 line is caught within ~5s."""
+        status = self.cfg.prop_status
+        start = self.cfg.prop_start_balance
+        if status == "active" and self._prop_latch:
+            if self._prop_latch[1] == start:
+                # row says active but we latched on THIS start balance → the
+                # persist was lost (or a refresh read a stale row). Re-assert.
+                status = self._prop_latch[0]
+                self.cfg.update(prop_status=status)
+            else:
+                # start balance changed + status reset → deliberate new phase
+                self._prop_latch = None
+        if status != "active":
+            self._prop_latch = (status, start)
+            return status, False
+        pass_eq, floor_eq = self.prop_levels()
+        if equity >= pass_eq:
+            status = "passed"
+        elif equity <= floor_eq:
+            status = "failed"
+        else:
+            return "active", False
+        self._prop_latch = (status, start)
+        self.cfg.update(prop_status=status)    # persisted: a restart never resumes
+        return status, True
+
+    def _check_kill_prop(self, equity: float) -> tuple[bool, str, bool] | None:
+        status, newly = self.check_prop(equity)
+        if status == "active":
+            return None
+        pass_eq, floor_eq = self.prop_levels()
+        if newly:
+            if status == "passed":
+                return True, f"prop_passed (${equity:.2f} >= ${pass_eq:.2f})", True
+            return True, f"prop_failed (${equity:.2f} <= ${floor_eq:.2f})", True
+        # steady state: latched, nothing more to do (close_all only on the edge;
+        # the loop's kill-latch orphan closer keeps the book flat)
+        return True, f"prop_{status} (latched — reset prop_status to resume)", False
 
     # ---- kill switches ----
 
@@ -102,6 +161,13 @@ class Sentinel:
             return True, "bot_stopped", False
         if self.cfg.trading_paused:
             return True, "paused", False
+        if self.is_prop():
+            # prop: no weekly goal / ceiling / withdraw — pass/fail latch instead;
+            # daily cap, max positions, losing streak, news stay as in weekly mode
+            hit = self._check_kill_prop(equity)
+            if hit:
+                return hit
+            return self._check_kill_common(open_positions, symbols)
         ceiling = self.cfg.baseline_equity + self.cfg.weekly_goal
         # goal banked earlier, profit since WITHDRAWN (equity back to baseline,
         # nothing open) → resume trading with a fresh weekly slate. This is the
@@ -131,6 +197,11 @@ class Sentinel:
         floor = self.cfg.baseline_equity - self.cfg.max_weekly_drawdown
         if equity <= floor:
             return True, f"equity_floor (${equity:.2f} <= ${floor:.2f})", True
+        return self._check_kill_common(open_positions, symbols)
+
+    def _check_kill_common(self, open_positions: int,
+                           symbols: list | None) -> tuple[bool, str, bool]:
+        """Guards shared by weekly and prop mode."""
         if self.daily_pnl <= -self.cfg.max_daily_loss:
             return True, f"daily_loss_cap (${self.daily_pnl:.2f})", True
         if open_positions >= self.cfg.max_open_positions:
@@ -149,9 +220,14 @@ class Sentinel:
     # ---- risk computation ----
 
     def risk_amount(self, signal_confidence: float, current_date: date) -> float:
-        """Dollar risk for this trade, with Thursday aggression boost."""
-        risk = self.cfg.max_risk_per_trade
-        if (self.cfg.thursday_aggression and current_date.weekday() == 3
+        """Dollar risk for this trade, with Thursday aggression boost.
+        Prop mode: fixed start_balance × risk_pct_per_trade ($25) — no boost,
+        not equity-scaled (consistent sizing for the prop's lot-anomaly rule)."""
+        if self.is_prop():
+            risk = self.cfg.prop_start_balance * self.cfg.risk_pct_per_trade
+        else:
+            risk = self.cfg.max_risk_per_trade
+        if (not self.is_prop() and self.cfg.thursday_aggression and current_date.weekday() == 3
                 and self.weekly_pnl < self.cfg.thursday_threshold
                 and signal_confidence >= self.cfg.min_confidence_for_boost):
             risk = self.cfg.thursday_risk
