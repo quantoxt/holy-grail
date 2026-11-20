@@ -85,7 +85,11 @@ if [ "${DRY_RUN:-0}" = "1" ]; then
 fi
 
 # --- 4. sync code (same excludes as the manual flow; never .env, never deploy/) ---
-if ! rsync -az --delete-excluded \
+# NOTE: no --delete here, and especially no --delete-excluded: /opt/holy-grail
+# holds a root-owned deploy/ dir that rsync must leave alone (deleting it
+# fails as opencode-deploy and aborts the whole sync). Stale files linger,
+# exactly like the manual flow — harmless.
+if ! rsync -az \
     --exclude .git --exclude .env --exclude deploy/ \
     --exclude venv-torch/ --exclude frontend/node_modules/ \
     --exclude frontend/dist/ --exclude model/ \
