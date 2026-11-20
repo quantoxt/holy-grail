@@ -149,6 +149,80 @@ class DBLogger:
             "telegram_sent": bool(telegram_sent),
         }).execute()
 
+    # --- telegram subscribers (command-center opt-ins) ---
+    def ensure_owner_subscriber(self, chat_id):
+        self.client.table("telegram_subscribers").upsert({
+            "chat_id": int(chat_id), "status": "active",
+            "is_owner": True,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }, on_conflict="chat_id").execute()
+
+    def subscribe_chat(self, chat_id, note=""):
+        self.client.table("telegram_subscribers").upsert({
+            "chat_id": int(chat_id), "status": "active", "muted": False,
+            "note": (note or "")[:120],
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }, on_conflict="chat_id").execute()
+
+    def unsubscribe_chat(self, chat_id):
+        self.client.table("telegram_subscribers").update({
+            "status": "inactive",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("chat_id", int(chat_id)).execute()
+
+    def set_muted(self, chat_id, muted: bool):
+        self.client.table("telegram_subscribers").update({
+            "muted": bool(muted),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("chat_id", int(chat_id)).execute()
+
+    def get_subscriber(self, chat_id):
+        r = self.client.table("telegram_subscribers").select("*") \
+            .eq("chat_id", int(chat_id)).limit(1).execute()
+        return (r.data or [None])[0]
+
+    def active_subscribers(self):
+        """Everyone who gets proactive alerts: active + unmuted (owner included)."""
+        r = self.client.table("telegram_subscribers").select("chat_id,note,is_owner") \
+            .eq("status", "active").eq("muted", False).execute()
+        return r.data or []
+
+    def all_subscribers(self):
+        r = self.client.table("telegram_subscribers").select("*") \
+            .order("created_at").limit(100).execute()
+        return r.data or []
+
+    # --- status snapshot (feeds the /status command; tolerant, never raises) ---
+    def status_snapshot(self):
+        snap = {"account": {}, "config": {}, "trades": [], "signals": []}
+        try:
+            a = self.client.table("account_state").select("*") \
+                .order("updated_at", desc=True).limit(1).execute()
+            snap["account"] = (a.data or [{}])[0]
+        except Exception:
+            pass
+        try:
+            c = self.client.table("bot_config").select("config").eq("id", 1) \
+                .limit(1).execute()
+            snap["config"] = ((c.data or [{}])[0].get("config") or {})
+        except Exception:
+            pass
+        try:
+            t = self.client.table("trades").select(
+                "symbol,direction,entry_price,exit_price,pnl,result,entry_time,exit_time") \
+                .order("created_at", desc=True).limit(5).execute()
+            snap["trades"] = t.data or []
+        except Exception:
+            pass
+        try:
+            s = self.client.table("signal_alerts").select(
+                "symbol,direction,entry_price,sl_price,tp_price,confidence,signal_time,telegram_sent") \
+                .order("signal_time", desc=True).limit(5).execute()
+            snap["signals"] = s.data or []
+        except Exception:
+            pass
+        return snap
+
     # --- risk events (Sentinel) ---
     def log_risk_event(self, event_type, reason, data=None, lot_before=None, lot_after=None):
         self.client.table("risk_events").insert({

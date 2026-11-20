@@ -2,35 +2,70 @@
 
 No-op if TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not configured in .env.
 Called from the loop on trade open/close + kill switch.
+
+Multi-chat: send_telegram defaults to the owner chat (TELEGRAM_CHAT_ID) but
+accepts an explicit chat_id so alerts fan out to command-center subscribers.
+get_updates() powers the inbound command poller (shared/telegram_commands.py).
 """
 import asyncio
 import json
+import urllib.parse
 import urllib.request
 
 from shared.config import settings
 
 
-def _send_sync(message: str, reply_to: int | None = None) -> int | None:
+def _api(method: str) -> str:
+    return f"https://api.telegram.org/bot{settings.telegram_bot_token}/{method}"
+
+
+def _post(method: str, payload: dict, timeout: int = 10):
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(_api(method), data=data,
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode())
+
+
+def _send_sync(message: str, reply_to: int | None = None,
+               chat_id: str | int | None = None) -> int | None:
     """POST sendMessage; returns the new message's id (used to thread close
     alerts as replies to their open alert) or None on any failure."""
     token = settings.telegram_bot_token
-    chat_id = settings.telegram_chat_id
-    if not token or not chat_id:
+    chat = chat_id or settings.telegram_chat_id
+    if not token or not chat:
         return None
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
+    payload = {"chat_id": chat, "text": message, "parse_mode": "Markdown"}
     if reply_to:
         payload["reply_to_message_id"] = reply_to
-    data = json.dumps(payload).encode()
-    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            body = json.loads(resp.read().decode())
-            return body.get("result", {}).get("message_id")
+        body = _post("sendMessage", payload)
+        return body.get("result", {}).get("message_id")
     except Exception:
         return None
 
 
-async def send_telegram(message: str, reply_to: int | None = None) -> int | None:
+async def send_telegram(message: str, reply_to: int | None = None,
+                        chat_id: str | int | None = None) -> int | None:
     """Send a Telegram message (async, non-blocking). Returns its message id."""
-    return await asyncio.to_thread(_send_sync, message, reply_to)
+    return await asyncio.to_thread(_send_sync, message, reply_to, chat_id)
+
+
+def get_updates(offset: int | None = None, timeout: int = 30) -> list:
+    """Long-poll Bot API getUpdates (single-flight: only ONE poller may run —
+    the bot container owns it). Returns the raw update list, [] on any failure
+    or when not configured."""
+    if not settings.telegram_bot_token:
+        return []
+    params = {"timeout": timeout, "allowed_updates": json.dumps(["message"])}
+    if offset is not None:
+        params["offset"] = offset
+    url = _api("getUpdates") + "?" + urllib.parse.urlencode(params)
+    try:
+        with urllib.request.urlopen(url, timeout=timeout + 10) as resp:
+            body = json.loads(resp.read().decode())
+        if not body.get("ok"):
+            return []
+        return body.get("result", [])
+    except Exception:
+        return []

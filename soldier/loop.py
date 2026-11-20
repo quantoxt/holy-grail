@@ -343,7 +343,7 @@ class Trader:
                      conf=f"{sig['confidence']:.2f}", entry=entry)
 
             try:
-                self.open[sym]["tg_msg_id"] = await send_telegram(
+                self.open[sym]["tg_msg_id"] = await self._notify_all(
                     f"📡 OPEN {sym} {sig['direction']}\n"
                     f"Lot: {lot} | Risk @SL: ${actual_risk:.2f}\n"
                     f"Confidence: {sig['confidence']:.0%} | Entry: {entry:.2f}")
@@ -524,7 +524,7 @@ class Trader:
             actual_risk = None
         try:
             msg = self._format_signal_message(sym, sig, target, actual_risk)
-            msg_id = await send_telegram(msg)
+            msg_id = await self._notify_all(msg)
             sent = msg_id is not None
         except Exception:
             sent = False
@@ -615,7 +615,7 @@ class Trader:
             pass
 
         try:
-            await send_telegram(
+            await self._notify_all(
                 f"{'🟢' if correct else '🔴'} CLOSE {sym} {pos['direction']} ({reason})\n"
                 f"P&L: ${pnl:+.2f} ({result_str})\n"
                 f"Balance: ${bal:.2f}\n"
@@ -681,7 +681,7 @@ class Trader:
             # and Telegram would only ever report the wins (loss trades "vanish")
             bal = await self.get_balance()
             try:
-                await send_telegram(
+                await self._notify_all(
                     f"{'🟢' if correct else '🔴'} CLOSE {sym} {pos['direction']} (SL/external)\n"
                     f"P&L: ${pnl:+.2f} ({'WIN ✅' if correct else 'LOSS ❌'})\n"
                     f"Balance: ${bal:.2f}\n"
@@ -888,7 +888,7 @@ class Trader:
         await self._close_all("weekly_goal_banked")
         self.sentinel.weekly_goal_locked = True
         try:
-            await send_telegram(
+            await self._notify_all(
                 f"🎯 Weekly goal banked (${runtime.weekly_goal:.2f}). "
                 f"Closing all positions — resting for the week.")
         except Exception:
@@ -909,7 +909,7 @@ class Trader:
             msg = (f"🛑 Prop evaluation FAILED-SAFE — equity ${equity:.2f} <= our floor "
                    f"${floor_eq:.2f}. All positions closed, trading stopped.")
         try:
-            await send_telegram(msg)
+            await self._notify_all(msg)
         except Exception:
             pass
 
@@ -1062,7 +1062,7 @@ class Trader:
             self.log(type="SWITCH", msg=f"switched to {self.provider.account_name} "
                      f"(login {getattr(self.provider, '_login', '?')}) — stats reset")
             try:
-                await send_telegram(f"🔄 MT5 account switched to {self.provider.account_name} — fresh start")
+                await self._notify_all(f"🔄 MT5 account switched to {self.provider.account_name} — fresh start")
             except Exception:
                 pass
         except Exception as e:
@@ -1150,6 +1150,32 @@ class Trader:
         except Exception:
             pass
 
+    async def _notify_all(self, message: str, reply_to: int | None = None) -> int | None:
+        """Fan out a proactive alert: owner chat first (close-threading
+        preserved), then every other active, unmuted command-center subscriber.
+        Falls back to owner-only if the subscriber table is unreachable
+        (today's behavior). Never raises."""
+        try:
+            owner_id = await send_telegram(message, reply_to=reply_to)
+        except Exception:
+            owner_id = None
+        try:
+            subs = db.active_subscribers()
+        except Exception:
+            return owner_id
+        try:
+            owner = str(settings.telegram_chat_id)
+        except Exception:
+            owner = ""
+        for s in subs or []:
+            try:
+                if str(s.get("chat_id")) == owner:
+                    continue  # owner already got it (with threading)
+                await send_telegram(message, chat_id=s.get("chat_id"))
+            except Exception:
+                continue
+        return owner_id
+
     async def run(self, cycles=None, interval_sec=300):
         runtime.refresh()   # boot from the dashboard's last-saved config, not code defaults
         await self._reconcile_positions()   # never orphan an open trade across restarts
@@ -1157,6 +1183,12 @@ class Trader:
         self._seed_watcher()                # drift window survives restarts too
         c = 0
         telemetry = asyncio.create_task(self._telemetry())
+        try:
+            from shared.telegram_commands import CommandCenter
+            commands = asyncio.create_task(CommandCenter(self).run())
+        except Exception as e:
+            commands = None
+            self.log(type="TGCMD_ERR", msg=f"command poller failed to start: {e}")
         try:
             while cycles is None or c < cycles:
                 if not runtime.bot_running:
@@ -1169,6 +1201,8 @@ class Trader:
                     await asyncio.sleep(interval_sec)
         finally:
             telemetry.cancel()
+            if commands is not None:
+                commands.cancel()
             try:
                 mt5_shutdown = getattr(self.provider, "shutdown", None)
                 if mt5_shutdown:
