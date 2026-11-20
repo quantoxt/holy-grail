@@ -47,6 +47,10 @@ const advancedFields: Field[] = [
   { key: 'news_blackout_enabled', label: 'Sit out high-impact news', bool: true },
   { key: 'thursday_aggression', label: 'Thursday risk boost (weekly mode)', bool: true },
 ]
+const signalFields: Field[] = [
+  { key: 'signals_enabled', label: 'Signal Mode — alert Telegram on qualified setups (trading continues)', bool: true },
+  { key: 'signal_cooldown_min', label: 'Minutes between repeat alerts per symbol (direction flip always alerts)', step: 5 },
+]
 
 const isProp = computed(() => form.value.account_mode === 'prop')
 const show = (f: Field) => (f.pct ? +(Number(form.value[f.key] ?? 0) * 100).toFixed(3) : form.value[f.key])
@@ -58,7 +62,7 @@ const err = ref('')
 const save = async () => {
   saving.value = true; err.value = ''
   try {
-    const keys = [...propFields, ...weeklyFields, ...advancedFields].map((f) => f.key).concat(['account_mode'])
+    const keys = [...propFields, ...weeklyFields, ...advancedFields, ...signalFields].map((f) => f.key).concat(['account_mode'])
     const patch: Record<string, any> = {}
     for (const k of keys) if (form.value[k] !== undefined && JSON.stringify(form.value[k]) !== JSON.stringify(config.value[k])) patch[k] = form.value[k]
     if (Object.keys(patch).length) config.value = await patchConfig(patch)
@@ -206,6 +210,27 @@ const remove = async (a: any) => {
         </button>
       </div>
       <button v-if="symbolsDirty" class="btn-primary mt-4" @click="applySymbols"><PhCheckCircle :size="18" weight="duotone" />Apply instruments</button>
+    </section>
+
+    <!-- signal mode -->
+    <section class="rounded-[28px] bg-(--card) p-5 md:p-7">
+      <h2 class="font-display text-xl font-semibold">Signal Mode</h2>
+      <p class="text-(--muted) text-sm mt-1 mb-5">Hybrid: trading continues as today. Qualified setups — same gates as live trades — also send a full-ticket Telegram alert (entry, SL, TP, confidence). One alert per symbol per cooldown unless direction flips.</p>
+      <div class="grid gap-x-6 gap-y-4 sm:grid-cols-2">
+        <label v-for="f in signalFields" :key="f.key" class="block" :class="{ 'flex items-center gap-3': f.bool }">
+          <template v-if="f.bool">
+            <input type="checkbox" :checked="!!form[f.key]" @change="form[f.key] = ($event.target as HTMLInputElement).checked; edit()" class="size-5 accent-(--primary)" />
+            <span class="text-sm font-medium">{{ f.label }}</span>
+          </template>
+          <template v-else>
+            <span class="text-sm font-medium">{{ f.label }}</span>
+            <div class="relative mt-1">
+              <input type="number" :step="f.step" :value="show(f)" @input="set(f, ($event.target as HTMLInputElement).value)" class="input w-full" />
+            </div>
+          </template>
+        </label>
+      </div>
+      <button class="btn-primary mt-6" :disabled="saving || !dirty" @click="save"><PhFloppyDisk :size="18" weight="duotone" />Save changes</button>
     </section>
 
     <!-- accounts -->

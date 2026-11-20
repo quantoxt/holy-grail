@@ -53,6 +53,7 @@ class Trader:
         self.closed_until: dict = {}   # symbol → epoch until which its market is closed (10018 backoff)
         self.pending_deals: list = []  # closes whose deal wasn't in history yet → retried ~60s
         self.kill_latched: bool = False  # last cycle's kill-switch state (orphan closer)
+        self.last_signal_sent: dict = {}  # symbol → (direction, epoch) for Signal Mode cooldown
         LOG.parent.mkdir(parents=True, exist_ok=True)
 
     def log(self, **kw):
@@ -180,6 +181,35 @@ class Trader:
                      and sig["confidence"] >= runtime.min_confidence}
         ranked = sorted(tradeable.items(), key=lambda x: abs(x[1]["predicted_move"]), reverse=True)
 
+        # Phase 4b: Signal Mode (hybrid) — qualified setups alert Telegram even
+        # when the trade itself can't open (no slots, risk cap, correlated).
+        # Quality gates mirror the trade path; execution constraints do not block.
+        if getattr(runtime, "signals_enabled", True):
+            for sym, sig in ranked:
+                ok, _ = self.watcher.should_trade(sig)
+                if not ok:
+                    break  # drift is global — same stop as the trade path
+                if self.closed_until.get(sym, 0) > time.time():
+                    continue
+                try:
+                    if hasattr(self.provider, "is_open") and not self.provider.is_open(sym):
+                        continue
+                except Exception:
+                    pass
+                try:
+                    spread = self.provider.get_spread(sym)
+                    spread_pct = spread / sig["current_close"] if sig.get("current_close") else 0
+                    if spread_pct > settings.spread_max_of_move * abs(sig["predicted_move"]):
+                        continue
+                except Exception:
+                    pass
+                if sig.get("snr", 99) < settings.snr_min:
+                    continue
+                try:
+                    await self._maybe_send_signal(sym, sig, equity)
+                except Exception:
+                    pass
+
         # Phase 5: Open positions (best first, up to max_open_positions)
         # Slot count uses the BROKER's real position count too — the bot's memory
         # can undercount (an orphaned open, a failed tracking) and over-opening
@@ -290,32 +320,9 @@ class Trader:
 
             # Adopt the ACTUAL fill price — the candle close can be minutes stale, and
             # a target computed off a stale entry fires instantly (spread-scale scalping).
+            # Shared with Signal Mode (_compute_signal_target) so tickets and fills agree.
             fill = result.get("entry_price") or entry
-            direction_sign_open = 1 if sig["direction"] == "BUY" else -1
-            # TP sizing, best mode first:
-            #   1. R-multiple (default): target = entry ± tp_rr_mult × SL distance. At
-            #      1:2 R:R a 34% win rate profits — the only sizing whose economics
-            #      survive a coin-flip edge. Kronos magnitude is noise (corr≈0), so the
-            #      target is anchored to the RISK we're actually taking, not the forecast.
-            #   2. vol-multiple (per-symbol override of tp_vol_mult)
-            #   3. fraction of the predicted move (tp_fraction)
-            _tp_mult = (runtime.tp_vol_mults or {}).get(sym, runtime.tp_vol_mult)
-            sl_dist_fill = abs(fill - sig["sl_price"]) if sig["sl_price"] else 0.0
-            if runtime.tp_rr_mult > 0 and sl_dist_fill > 0:
-                target_price = fill + direction_sign_open * runtime.tp_rr_mult * sl_dist_fill
-            elif _tp_mult > 0 and sig.get("vol"):
-                target_price = fill + direction_sign_open * _tp_mult * sig["vol"] * fill
-            else:
-                target_price = fill + runtime.tp_fraction * (sig["predicted_close"] - fill)
-            # Spread floor: a target closer than a few spreads from the fill is a
-            # guaranteed net loss even when "hit" — push it out.
-            spread_now = self.provider.get_spread(sym)
-            if spread_now and runtime.tp_min_spread_mult > 0:
-                min_dist = runtime.tp_min_spread_mult * spread_now
-                if direction_sign_open > 0 and target_price < fill + min_dist:
-                    target_price = fill + min_dist
-                elif direction_sign_open < 0 and target_price > fill - min_dist:
-                    target_price = fill - min_dist
+            target_price = self._compute_signal_target(sym, sig, fill)
 
             self.open[sym] = {
                 "direction": sig["direction"], "entry_price": fill,
@@ -399,6 +406,117 @@ class Trader:
             except Exception as e:
                 self.log(type="ERROR", symbol=sym, msg=str(e))
         return signals
+
+    def _compute_signal_target(self, sym: str, sig: dict, fill: float):
+        """TP for a signal — identical math to the trade open path (R-multiple
+        first, then vol-multiple, then fraction of predicted move, spread floor).
+        Pure function of (runtime, sig, fill) so signals and fills agree."""
+        direction_sign = 1 if sig["direction"] == "BUY" else -1
+        _tp_mult = (runtime.tp_vol_mults or {}).get(sym, runtime.tp_vol_mult)
+        sl_dist_fill = abs(fill - sig["sl_price"]) if sig.get("sl_price") else 0.0
+        if runtime.tp_rr_mult > 0 and sl_dist_fill > 0:
+            target = fill + direction_sign * runtime.tp_rr_mult * sl_dist_fill
+        elif _tp_mult > 0 and sig.get("vol"):
+            target = fill + direction_sign * _tp_mult * sig["vol"] * fill
+        else:
+            target = fill + runtime.tp_fraction * (sig["predicted_close"] - fill)
+        try:
+            spread_now = self.provider.get_spread(sym)
+        except Exception:
+            spread_now = 0
+        if spread_now and runtime.tp_min_spread_mult > 0:
+            min_dist = runtime.tp_min_spread_mult * spread_now
+            if direction_sign > 0 and target < fill + min_dist:
+                target = fill + min_dist
+            elif direction_sign < 0 and target > fill - min_dist:
+                target = fill - min_dist
+        return target
+
+    def _signal_cooldown_ok(self, sym: str, direction: str) -> bool:
+        """2h dedup per symbol unless the direction flipped. In-memory only —
+        a restart may resend one signal per symbol (accepted for the MVP)."""
+        try:
+            cooldown_s = max(0, int(getattr(runtime, "signal_cooldown_min", 120))) * 60
+        except Exception:
+            cooldown_s = 7200
+        last = self.last_signal_sent.get(sym)
+        if not last:
+            return True
+        last_dir, last_ts = last
+        if direction != last_dir:
+            return True
+        return (time.time() - last_ts) >= cooldown_s
+
+    def _format_signal_message(self, sym: str, sig: dict, target: float,
+                               actual_risk=None) -> str:
+        tf = settings.timeframe
+        horizon_min = settings.pred_len * 5
+        hrs = horizon_min / 60
+        horizon_txt = f"~{hrs:g}h ({settings.pred_len}x{tf})"
+        emoji = "🟢" if sig["direction"] == "BUY" else "🔴"
+        lines = [
+            f"{emoji} SIGNAL {sym} {sig['direction']} ({tf}, h={settings.pred_len})",
+            f"Entry: {sig['current_close']:.2f}",
+            f"SL: {sig['sl_price']:.2f}" if sig.get("sl_price") else "SL: n/a",
+            f"TP: {target:.2f} ({runtime.tp_rr_mult:g}R)" if target else "TP: n/a",
+            f"Confidence: {sig['confidence']:.0%} | Move: {sig['predicted_move']:+.2%}",
+            f"SNR: {sig.get('snr', 0):.2f} | Horizon: {horizon_txt}",
+        ]
+        if actual_risk is not None:
+            lines.append(f"Risk @SL (min lot): ${actual_risk:.2f}")
+        lines.append("Not financial advice. Manage your own risk.")
+        return "\n".join(lines)
+
+    async def _maybe_send_signal(self, sym: str, sig: dict, equity: float) -> bool:
+        """Send one full-ticket Telegram signal if enabled + cooled-down.
+        Same quality gates as live trades (caller filters); execution-only
+        constraints (slots, risk cap, correlation) do NOT block signals."""
+        if not getattr(runtime, "signals_enabled", True):
+            return False
+        if sig.get("direction") not in ("BUY", "SELL"):
+            return False
+        if not self._signal_cooldown_ok(sym, sig["direction"]):
+            return False
+        entry = sig.get("current_close")
+        if not entry or not sig.get("sl_price"):
+            return False
+        try:
+            target = self._compute_signal_target(sym, sig, entry)
+        except Exception:
+            return False
+        # indicative $-at-SL at min lot for the ticket (best-effort, never blocks)
+        actual_risk = None
+        try:
+            spec = await self.provider.get_symbol_info(sym)
+            risk = self.sentinel.risk_amount(sig["confidence"],
+                                             datetime.now(timezone.utc).date())
+            lot = self.sentinel.lot_size(risk, entry, sig["sl_price"],
+                                         spec["contract_size"],
+                                         spec["volume_min"], spec["volume_step"])
+            actual_risk = lot * abs(entry - sig["sl_price"]) * spec["contract_size"]
+        except Exception:
+            actual_risk = None
+        try:
+            msg = self._format_signal_message(sym, sig, target, actual_risk)
+            msg_id = await send_telegram(msg)
+            sent = msg_id is not None
+        except Exception:
+            sent = False
+        # cooldown stamps on ATTEMPT (not only on success) — a failed send
+        # shouldn't retry every 5 min and spam on recovery
+        self.last_signal_sent[sym] = (sig["direction"], time.time())
+        self.log(type="SIGNAL", symbol=sym, dir=sig["direction"],
+                 entry=round(entry, 2), sl=round(sig["sl_price"], 2),
+                 tp=round(target, 2), conf=f"{sig['confidence']:.2f}",
+                 sent=sent)
+        try:
+            db.log_signal_alert(sym, settings.timeframe, sig["direction"], entry,
+                                sig["sl_price"], target, sig["confidence"],
+                                sig["predicted_move"], sig.get("snr", 0),
+                                telegram_sent=sent)
+        except Exception:
+            pass
+        return sent
 
     async def _resolve_positions(self):
         """Close positions whose h=pred_len horizon has elapsed."""

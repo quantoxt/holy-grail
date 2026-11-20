@@ -93,6 +93,10 @@ class RuntimeConfig:
     bot_running: bool = True            # dashboard start/stop toggle
     trading_paused: bool = False        # pause (stay connected, no new trades)
 
+    # --- signal mode (hybrid: trading continues, qualified setups also alert) ---
+    signals_enabled: bool = True        # dashboard toggle: send Telegram signals
+    signal_cooldown_min: int = 120      # one alert per symbol per N min unless direction flips
+
     # --- balance-based weekly P&L (broker history lags real closes) ---
     # Snapshot of the account balance at the start of the current trading week
     # (Monday 00:00 UTC). weekly_pnl = balance − week_start_balance − cashflow_since

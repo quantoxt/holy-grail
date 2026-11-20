@@ -136,6 +136,19 @@ class DBLogger:
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
         self.client.table("kronos_predictions").lt("created_at", cutoff.isoformat()).delete().execute()
 
+    # --- signal alerts (Signal Mode dispatches — one row per Telegram signal) ---
+    def log_signal_alert(self, symbol, timeframe, direction, entry_price, sl_price,
+                         tp_price, confidence, predicted_move, snr, telegram_sent=True):
+        self.client.table("signal_alerts").insert({
+            "symbol": symbol, "timeframe": timeframe,
+            "market_mode": settings.market_mode,
+            "signal_time": datetime.now(timezone.utc).isoformat(),
+            "direction": direction,
+            "entry_price": entry_price, "sl_price": sl_price, "tp_price": tp_price,
+            "confidence": confidence, "predicted_move": predicted_move, "snr": snr,
+            "telegram_sent": bool(telegram_sent),
+        }).execute()
+
     # --- risk events (Sentinel) ---
     def log_risk_event(self, event_type, reason, data=None, lot_before=None, lot_after=None):
         self.client.table("risk_events").insert({

@@ -2,13 +2,14 @@
 import { ref, computed, onMounted, onUnmounted, watch, defineAsyncComponent } from 'vue'
 import type { Session } from '@supabase/supabase-js'
 import {
-  PhMountains, PhChartLineUp, PhListBullets, PhNotebook, PhSlidersHorizontal,
+  PhMountains, PhChartLineUp, PhBell, PhListBullets, PhNotebook, PhSlidersHorizontal,
   PhSignOut, PhSun, PhMoon,
 } from '@phosphor-icons/vue'
 import { supabase } from './lib/supabase'
 import Login from './views/Login.vue'
 import Cockpit from './views/Cockpit.vue'
 const Analytics = defineAsyncComponent(() => import('./views/Analytics.vue'))
+const Signals = defineAsyncComponent(() => import('./views/Signals.vue'))
 const Trades = defineAsyncComponent(() => import('./views/Trades.vue'))
 const Journal = defineAsyncComponent(() => import('./views/Journal.vue'))
 const Settings = defineAsyncComponent(() => import('./views/Settings.vue'))
@@ -29,6 +30,7 @@ onUnmounted(() => unsub?.())
 const views = [
   { id: 'cockpit', label: 'Cockpit', icon: PhMountains },
   { id: 'analytics', label: 'Analytics', icon: PhChartLineUp },
+  { id: 'signals', label: 'Signals', icon: PhBell },
   { id: 'trades', label: 'Trades', icon: PhListBullets },
   { id: 'journal', label: 'Journal', icon: PhNotebook },
   { id: 'settings', label: 'Settings', icon: PhSlidersHorizontal },
@@ -44,7 +46,7 @@ watch(view, (v) => { if (location.hash.slice(1) !== v) location.hash = v })
 window.addEventListener('hashchange', () => { view.value = readView() })
 
 const current = computed(() => ({
-  cockpit: Cockpit, analytics: Analytics, trades: Trades, journal: Journal, settings: Settings,
+  cockpit: Cockpit, analytics: Analytics, signals: Signals, trades: Trades, journal: Journal, settings: Settings,
 }[view.value]))
 
 // theme: follow the system unless the user picked one (per-device convenience only)

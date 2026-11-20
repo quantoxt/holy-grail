@@ -9,6 +9,7 @@ const config = ref<Record<string, any>>({})
 const account = ref<Record<string, any>>({})
 const trades = ref<any[]>([])
 const signals = ref<any[]>([])
+const signalAlerts = ref<any[]>([])
 const riskEvents = ref<any[]>([])
 const now = ref(Date.now())
 const loaded = ref(false)
@@ -18,11 +19,12 @@ let users = 0
 async function refresh() {
   now.value = Date.now()
   try {
-    const [cfg, acct, tr, sig, risk] = await Promise.all([
+    const [cfg, acct, tr, sig, alerts, risk] = await Promise.all([
       supabase.from('bot_config').select('config').eq('id', 1).limit(1),
       supabase.from('account_state').select('*').order('updated_at', { ascending: false }).limit(1),
       supabase.from('trades').select('*').order('created_at', { ascending: false }).limit(1000),
       supabase.from('signals').select('*').order('signal_time', { ascending: false }).limit(20),
+      supabase.from('signal_alerts').select('*').order('signal_time', { ascending: false }).limit(100),
       supabase.from('risk_events').select('*').order('created_at', { ascending: false }).limit(20),
     ])
     config.value = (cfg.data?.[0]?.config as Record<string, any>) || {}
@@ -31,6 +33,8 @@ async function refresh() {
     const login = account.value?.login
     trades.value = (tr.data || []).filter((t) => !login || Number(t.mt5_login) === Number(login))
     signals.value = sig.data || []
+    // signal_alerts table ships with migration 014 — tolerate backends that predate it
+    signalAlerts.value = (alerts as any)?.data || []
     riskEvents.value = risk.data || []
   } catch { /* keep last good values */ }
   loaded.value = true
@@ -84,7 +88,7 @@ export function useLive() {
     }
   })
 
-  return { config, account, trades, closed, signals, riskEvents, now, loaded, online, heartbeatAge, challenge, today, refresh, stop }
+  return { config, account, trades, closed, signals, signalAlerts, riskEvents, now, loaded, online, heartbeatAge, challenge, today, refresh, stop }
 }
 
 export const money = (v: unknown, sign = false) => {
