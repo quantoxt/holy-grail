@@ -52,7 +52,7 @@ const advancedFields: Field[] = [
   { key: 'thursday_aggression', label: 'Thursday risk boost (weekly mode)', bool: true },
 ]
 const signalFields: Field[] = [
-  { key: 'signals_enabled', label: 'Signal Mode — alert Telegram on qualified setups (trading continues)', bool: true },
+  { key: 'signals_enabled', label: 'Signal Mode — alerts only, never opens trades', bool: true },
   { key: 'signal_cooldown_min', label: 'Minutes between repeat alerts per symbol (direction flip always alerts)', step: 5 },
 ]
 
@@ -219,7 +219,7 @@ const remove = async (a: any) => {
     <!-- signal mode -->
     <section class="rounded-[28px] bg-(--card) p-5 md:p-7">
       <h2 class="font-display text-xl font-semibold">Signal Mode</h2>
-      <p class="text-(--muted) text-sm mt-1 mb-5">Hybrid: trading continues as today. Qualified setups — same gates as live trades — also send a full-ticket Telegram alert (entry, SL, TP, confidence). One alert per symbol per cooldown unless direction flips. Pausing the bot stops new trades but signals keep firing.</p>
+      <p class="text-(--muted) text-sm mt-1 mb-5">A true mode, not an add-on. When on, the bot scans and sends full-ticket Telegram alerts but places zero orders — even on Run. Turn it off to resume live trading. Open positions are always still managed (stops, targets, safety rules).</p>
       <div class="grid gap-x-6 gap-y-4 sm:grid-cols-2">
         <label v-for="f in signalFields" :key="f.key" class="block" :class="{ 'flex items-center gap-3': f.bool }">
           <template v-if="f.bool">

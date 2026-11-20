@@ -202,10 +202,20 @@ class Trader:
                      and sig["confidence"] >= runtime.min_confidence}
         ranked = sorted(tradeable.items(), key=lambda x: abs(x[1]["predicted_move"]), reverse=True)
 
-        # Phase 4b: Signal Mode (hybrid) — qualified setups alert Telegram even
-        # when the trade itself can't open (no slots, risk cap, correlated).
-        # Quality gates mirror the trade path; execution constraints do not block.
+        # Phase 4b: Signal Mode fan-out over qualified setups. Quality gates
+        # mirror the trade path; execution constraints do not block.
         await self._dispatch_signals(ranked, equity)
+
+        # Signal Mode is a true mode, not an add-on: while it is on the bot
+        # NEVER opens a trade — it scans and alerts only. (Existing positions
+        # are still managed by telemetry: trailing, targets, horizon, kills.)
+        if getattr(runtime, "signals_enabled", True):
+            holds = {sym: sig for sym, sig in signals.items() if sig["direction"] == "HOLD"}
+            self.log(type="CYCLE", scanned=len(signals), tradeable=len(tradeable),
+                     opened=0, signal_only=True, open_total=len(self.open),
+                     holds=len(holds), bal=bal, equity=equity,
+                     weekly_pnl=f"${self.sentinel.weekly_pnl:.2f}")
+            return
 
         # Phase 5: Open positions (best first, up to max_open_positions)
         # Slot count uses the BROKER's real position count too — the bot's memory

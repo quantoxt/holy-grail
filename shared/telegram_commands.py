@@ -246,7 +246,12 @@ class CommandCenter:
             live = cfg
         state = "stopped"
         if live.get("bot_running"):
-            state = "paused (signals on)" if live.get("trading_paused") else "running"
+            if live.get("trading_paused"):
+                state = "paused (signals on)"
+            elif live.get("signals_enabled", True):
+                state = "signal mode (alerts only, no trades)"
+            else:
+                state = "running (live trading)"
         positions = acct.get("open_positions") or []
         lines = [
             f"Bot: {state} | Mode: {live.get('account_mode', '?')}",

@@ -36,7 +36,7 @@ const when = (iso?: string) => {
       <div>
         <h1 class="font-display text-[clamp(1.6rem,3.5vw,2.25rem)] font-semibold tracking-tight">Signals</h1>
         <p class="text-(--muted) mt-1">
-          {{ enabled ? `Signal Mode is on — one alert per symbol every ${cooldown} min unless direction flips.` : 'Signal Mode is off. Turn it on in Settings.' }}
+          {{ enabled ? `Signal Mode is on — the bot alerts but never opens trades. One alert per symbol every ${cooldown} min unless direction flips.` : 'Signal Mode is off. Turn it on in Settings to stop live trading and get alerts only.' }}
           Setups use the same gates as live trades.
         </p>
       </div>
