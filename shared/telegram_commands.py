@@ -360,7 +360,9 @@ class CommandCenter:
         try:
             candles = await self.trader.provider.get_candles(
                 sym, settings.timeframe, settings.lookback + 5)
-            sig = await asyncio.to_thread(self.trader.engine.get_signal, candles, sym)
+            # Same worker-thread + lock path as the scan cycle: the loop stays
+            # free and concurrent inferences can't race inside the model.
+            sig = await asyncio.to_thread(self.trader._infer, candles, sym)
         except Exception as e:
             await self._reply(chat_id, f"Couldn't analyze {sym} right now.")
             try:

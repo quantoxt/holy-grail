@@ -18,6 +18,7 @@ import argparse
 import asyncio
 import json
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -54,6 +55,10 @@ class Trader:
         self.pending_deals: list = []  # closes whose deal wasn't in history yet → retried ~60s
         self.kill_latched: bool = False  # last cycle's kill-switch state (orphan closer)
         self.last_signal_sent: dict = {}  # symbol → (direction, epoch) for Signal Mode cooldown
+        self._infer_lock = threading.Lock()  # Kronos inference runs in a worker
+        # thread (never on the event loop) so Telegram commands + the 5s
+        # heartbeat stay responsive mid-scan; the lock keeps concurrent
+        # inferences (scan vs /check) from racing inside the model.
         LOG.parent.mkdir(parents=True, exist_ok=True)
 
     def log(self, **kw):
@@ -357,6 +362,12 @@ class Trader:
                  holds=len(holds), bal=bal, equity=equity,
                  weekly_pnl=f"${self.sentinel.weekly_pnl:.2f}")
 
+    def _infer(self, candles, sym: str) -> dict:
+        """Run Kronos inference under the shared lock (sync — always called
+        from a worker thread, never on the event loop)."""
+        with self._infer_lock:
+            return self.engine.get_signal(candles, sym)
+
     async def _scan_signals(self) -> dict:
         """Phase 3: run Kronos over every active symbol, log signals/predictions/
         evaluations. Returns {symbol: signal}. Used by the trade cycle AND by the
@@ -369,7 +380,10 @@ class Trader:
                     self.log(type="SKIP", symbol=sym, reason="not offered by broker")
                     continue
                 candles = await self.provider.get_candles(sym, settings.timeframe, settings.lookback + 5)
-                sig = self.engine.get_signal(candles, sym)
+                # CPU-bound inference goes to a worker thread — awaiting it here
+                # keeps the event loop free (Telegram commands answer in seconds
+                # instead of waiting out the whole scan).
+                sig = await asyncio.to_thread(self._infer, candles, sym)
                 signals[sym] = sig
                 try:
                     db.log_signal(sym, settings.timeframe, sig["direction"],
