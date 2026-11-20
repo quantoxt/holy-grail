@@ -12,7 +12,11 @@ onUnmounted(stop)
 // ---- editable copy (polling never overwrites unsaved edits) ----
 const form = ref<Record<string, any>>({})
 const dirty = ref(false)
-const seed = () => { form.value = JSON.parse(JSON.stringify(config.value || {})); dirty.value = false }
+// Defaults for fields added after the bot_config row was seeded (cloud rows
+// predate them, so config.value lacks the keys — show the bot's real defaults
+// instead of an empty box, and write them through on first save).
+const fieldDefaults: Record<string, any> = { signals_enabled: true, signal_cooldown_min: 120 }
+const seed = () => { form.value = { ...fieldDefaults, ...JSON.parse(JSON.stringify(config.value || {})) }; dirty.value = false }
 watch(config, () => { if (!dirty.value) seed() }, { immediate: true })
 const edit = () => { dirty.value = true }
 
