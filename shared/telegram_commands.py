@@ -51,6 +51,7 @@ class CommandCenter:
 
     # ---- entry point (spawned from Trader.run alongside telemetry) ----
     async def run(self):
+        self._log("command poller started")
         try:
             if settings.telegram_chat_id:
                 db.ensure_owner_subscriber(settings.telegram_chat_id)
@@ -61,12 +62,21 @@ class CommandCenter:
             backlog = await asyncio.to_thread(tg.get_updates, None, 5)
             if backlog:
                 self.offset = max(u.get("update_id", 0) for u in backlog) + 1
-        except Exception:
-            pass
+                self._log(f"skipped {len(backlog)} stale update(s)")
+        except Exception as e:
+            self._log(f"backlog check failed: {type(e).__name__} {self._code(e)}")
+        fails = 0
         while True:
             try:
                 updates = await asyncio.to_thread(tg.get_updates, self.offset, 30)
-            except Exception:
+                fails = 0
+            except Exception as e:
+                fails += 1
+                # Log every HTTP error (409 = another poller stealing updates)
+                # and every 10th transient failure — silence hid a dead poller.
+                import urllib.error
+                if isinstance(e, urllib.error.HTTPError) or fails % 10 == 1:
+                    self._log(f"getUpdates failed ({fails}x): {type(e).__name__} {self._code(e)}")
                 await asyncio.sleep(5)
                 continue
             for u in updates or []:
@@ -75,6 +85,16 @@ class CommandCenter:
                     await self._route(u)
                 except Exception:
                     continue
+
+    def _log(self, msg: str):
+        try:
+            self.trader.log(type="TGCMD", msg=msg)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _code(e) -> str:
+        return str(getattr(e, "code", "") or getattr(e, "args", [""])[0])[:80]
 
     async def _route(self, update: dict):
         msg = update.get("message") or {}

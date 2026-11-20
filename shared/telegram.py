@@ -53,8 +53,11 @@ async def send_telegram(message: str, reply_to: int | None = None,
 
 def get_updates(offset: int | None = None, timeout: int = 30) -> list:
     """Long-poll Bot API getUpdates (single-flight: only ONE poller may run —
-    the bot container owns it). Returns the raw update list, [] on any failure
-    or when not configured."""
+    the bot container owns it). Returns the raw update list, [] on transient
+    network failure or when not configured. HTTP errors (e.g. 409 = another
+    getUpdates consumer is stealing updates) RAISE so the caller can log them —
+    swallowing them made a dead poller invisible."""
+    import urllib.error
     if not settings.telegram_bot_token:
         return []
     params = {"timeout": timeout, "allowed_updates": json.dumps(["message"])}
@@ -65,7 +68,9 @@ def get_updates(offset: int | None = None, timeout: int = 30) -> list:
         with urllib.request.urlopen(url, timeout=timeout + 10) as resp:
             body = json.loads(resp.read().decode())
         if not body.get("ok"):
-            return []
+            raise RuntimeError(f"getUpdates not ok: {str(body)[:120]}")
         return body.get("result", [])
+    except urllib.error.HTTPError:
+        raise  # caller logs the status code (409 = conflicting poller)
     except Exception:
         return []
