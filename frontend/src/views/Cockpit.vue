@@ -19,7 +19,7 @@ const state = computed(() => {
   if (challenge.value.status === 'passed') return { icon: PhFlagCheckered, tone: 'var(--profit)', title: 'Target reached', body: 'Everything is closed and trading has stopped. Start the next step in Settings.' }
   if (challenge.value.status === 'failed') return { icon: PhWarningOctagon, tone: 'var(--loss)', title: 'Stopped at the safety floor', body: 'Positions were closed before the account’s fail line. Trading stays off until you reset it in Settings.' }
   if (!config.value.bot_running) return { icon: PhMoonStars, tone: 'var(--muted)', title: 'Bot is stopped', body: 'Connected and watching, but it will not trade until you start it.' }
-  if (config.value.trading_paused) return { icon: PhCoffee, tone: 'var(--warning)', title: 'Taking a break', body: 'Trading is paused. Open positions are still managed.' }
+  if (config.value.trading_paused) return { icon: PhCoffee, tone: 'var(--warning)', title: 'Taking a break', body: 'No new trades — open positions are still managed. Signals keep firing while Signal Mode is on.' }
   if (account.value?.news_blackout) return { icon: PhNewspaper, tone: 'var(--warning)', title: 'Sitting out the news', body: account.value.news_reason || 'High-impact news is close, so no new trades.' }
   return { icon: PhLeaf, tone: 'var(--profit)', title: 'On the trail', body: 'Scanning for setups every 5 minutes and managing open trades.' }
 })

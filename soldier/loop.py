@@ -167,8 +167,24 @@ class Trader:
             # Shadow measurement: a latched week (goal banked / blackout / stopped)
             # is exactly when the CPU is idle — keep scoring predictions so the
             # per-symbol accuracy data accumulates even without trading.
-            if runtime.bot_running and not runtime.trading_paused:
-                await self._scan_signals()
+            # Pause-only kill is special: trading is paused but Signal Mode keeps
+            # flowing (signals never open trades), so scan + dispatch here.
+            if runtime.bot_running:
+                if kreason == "paused" and not close_all:
+                    try:
+                        _psignals = await self._scan_signals()
+                        _ptradeable = {
+                            sym: sig for sym, sig in _psignals.items()
+                            if sig["direction"] != "HOLD" and sym not in self.open
+                            and sig["confidence"] >= runtime.min_confidence}
+                        _pranked = sorted(
+                            _ptradeable.items(),
+                            key=lambda x: abs(x[1]["predicted_move"]), reverse=True)
+                        await self._dispatch_signals(_pranked, equity)
+                    except Exception:
+                        pass
+                elif not runtime.trading_paused:
+                    await self._scan_signals()
             return
 
         # Phase 3: Scan ALL symbols for signals
@@ -184,31 +200,7 @@ class Trader:
         # Phase 4b: Signal Mode (hybrid) — qualified setups alert Telegram even
         # when the trade itself can't open (no slots, risk cap, correlated).
         # Quality gates mirror the trade path; execution constraints do not block.
-        if getattr(runtime, "signals_enabled", True):
-            for sym, sig in ranked:
-                ok, _ = self.watcher.should_trade(sig)
-                if not ok:
-                    break  # drift is global — same stop as the trade path
-                if self.closed_until.get(sym, 0) > time.time():
-                    continue
-                try:
-                    if hasattr(self.provider, "is_open") and not self.provider.is_open(sym):
-                        continue
-                except Exception:
-                    pass
-                try:
-                    spread = self.provider.get_spread(sym)
-                    spread_pct = spread / sig["current_close"] if sig.get("current_close") else 0
-                    if spread_pct > settings.spread_max_of_move * abs(sig["predicted_move"]):
-                        continue
-                except Exception:
-                    pass
-                if sig.get("snr", 99) < settings.snr_min:
-                    continue
-                try:
-                    await self._maybe_send_signal(sym, sig, equity)
-                except Exception:
-                    pass
+        await self._dispatch_signals(ranked, equity)
 
         # Phase 5: Open positions (best first, up to max_open_positions)
         # Slot count uses the BROKER's real position count too — the bot's memory
@@ -466,6 +458,40 @@ class Trader:
             lines.append(f"Risk @SL (min lot): ${actual_risk:.2f}")
         lines.append("Not financial advice. Manage your own risk.")
         return "\n".join(lines)
+
+    async def _dispatch_signals(self, ranked, equity) -> None:
+        """Signal Mode fan-out over pre-ranked tradeable setups. Same quality
+        gates as the trade path (drift, market-open, spread, SNR); execution
+        constraints (slots, correlation, risk cap) do NOT block. Never raises."""
+        if not getattr(runtime, "signals_enabled", True):
+            return
+        for sym, sig in ranked:
+            try:
+                ok, _ = self.watcher.should_trade(sig)
+                if not ok:
+                    break  # drift is global — same stop as the trade path
+                if self.closed_until.get(sym, 0) > time.time():
+                    continue
+                try:
+                    if hasattr(self.provider, "is_open") and not self.provider.is_open(sym):
+                        continue
+                except Exception:
+                    pass
+                try:
+                    spread = self.provider.get_spread(sym)
+                    spread_pct = spread / sig["current_close"] if sig.get("current_close") else 0
+                    if spread_pct > settings.spread_max_of_move * abs(sig["predicted_move"]):
+                        continue
+                except Exception:
+                    pass
+                if sig.get("snr", 99) < settings.snr_min:
+                    continue
+                try:
+                    await self._maybe_send_signal(sym, sig, equity)
+                except Exception:
+                    pass
+            except Exception:
+                continue
 
     async def _maybe_send_signal(self, sym: str, sig: dict, equity: float) -> bool:
         """Send one full-ticket Telegram signal if enabled + cooled-down.

@@ -146,7 +146,7 @@ const remove = async (a: any) => {
     <section class="flex flex-wrap items-center gap-4">
       <div>
         <h2 class="font-display text-xl font-semibold">Bot</h2>
-        <p class="text-(--muted) text-sm">Currently {{ botState }}.</p>
+        <p class="text-(--muted) text-sm">Currently {{ botState }}.{{ botState === 'paused' ? ' No new trades — signals keep firing while Signal Mode is on.' : '' }}</p>
       </div>
       <div class="ml-auto flex rounded-2xl bg-(--card) p-1">
         <button class="seg" :class="{ on: botState === 'running' }" @click="control('start')"><PhPlay :size="18" weight="fill" />Run</button>
@@ -215,7 +215,7 @@ const remove = async (a: any) => {
     <!-- signal mode -->
     <section class="rounded-[28px] bg-(--card) p-5 md:p-7">
       <h2 class="font-display text-xl font-semibold">Signal Mode</h2>
-      <p class="text-(--muted) text-sm mt-1 mb-5">Hybrid: trading continues as today. Qualified setups — same gates as live trades — also send a full-ticket Telegram alert (entry, SL, TP, confidence). One alert per symbol per cooldown unless direction flips.</p>
+      <p class="text-(--muted) text-sm mt-1 mb-5">Hybrid: trading continues as today. Qualified setups — same gates as live trades — also send a full-ticket Telegram alert (entry, SL, TP, confidence). One alert per symbol per cooldown unless direction flips. Pausing the bot stops new trades but signals keep firing.</p>
       <div class="grid gap-x-6 gap-y-4 sm:grid-cols-2">
         <label v-for="f in signalFields" :key="f.key" class="block" :class="{ 'flex items-center gap-3': f.bool }">
           <template v-if="f.bool">
